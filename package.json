@@ -1,0 +1,26 @@
+{
+  "name": "cimdev-test-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CIMDEV desktop QA pipeline prototype",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "typecheck": "vue-tsc --noEmit && tsc --noEmit -p src/main/tsconfig.json && tsc --noEmit -p src/preload/tsconfig.json",
+    "test": "vitest run",
+    "build": "npm run typecheck && electron-vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "^43.2.0",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "vitest": "^3.0.7",
+    "vue-tsc": "^2.2.4"
+  }
+}
