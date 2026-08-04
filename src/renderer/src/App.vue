@@ -17,7 +17,8 @@ let unsubscribe: (() => void) | undefined
 
 const lanes = computed(() => snapshot.value?.lanes ?? emptyLanes(form.testTypes))
 const progress = computed(() => progressOf(snapshot.value))
-const canStart = computed(() => Boolean(runtime.value.mode === 'real' && form.projectPath && form.systemName && form.testTypes.length && !starting.value))
+const taskActive = computed(() => snapshot.value?.status === 'queued' || snapshot.value?.status === 'planning' || snapshot.value?.status === 'running')
+const canStart = computed(() => Boolean(runtime.value.mode === 'real' && form.projectPath && form.systemName && form.testTypes.length && !starting.value && !taskActive.value))
 
 async function selectProject(): Promise<void> {
   error.value = ''
@@ -50,6 +51,11 @@ async function startTask(): Promise<void> {
   }
 }
 
+async function cancelTask(): Promise<void> {
+  if (!snapshot.value || !taskActive.value) return
+  await window.testAgent.cancelTask(snapshot.value.taskId)
+}
+
 onMounted(() => {
   void window.testAgent.getRuntimeStatus().then((status) => (runtime.value = status))
   unsubscribe = window.testAgent.subscribeTask((next) => (snapshot.value = next))
@@ -61,7 +67,8 @@ onBeforeUnmount(() => unsubscribe?.())
   <main class="shell">
     <header class="topbar">
       <div class="brand"><span class="logo">≡</span><strong>CIMDEV Test Agent · QA Pipeline</strong><small class="mode-badge" :class="runtime.mode">{{ runtime.mode === 'real' ? '真实模式' : '未就绪' }}</small></div>
-      <button class="dark-button" :disabled="!canStart" @click="startTask">▶ {{ starting ? '启动中' : '发起真实测试' }}</button>
+      <button v-if="taskActive" class="dark-button" @click="cancelTask">■ 取消任务</button>
+      <button v-else class="dark-button" :disabled="!canStart" @click="startTask">▶ {{ starting ? '启动中' : '发起真实测试' }}</button>
     </header>
 
     <section class="hero-grid">

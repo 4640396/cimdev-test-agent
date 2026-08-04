@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
-    build: { rollupOptions: { input: resolve('src/main/index.ts') } }
+    build: { rollupOptions: { input: { index: resolve('src/main/index.ts'), 'service-cli': resolve('src/main/service-cli.ts'), 'worker-cli': resolve('src/main/worker-cli.ts') } } }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

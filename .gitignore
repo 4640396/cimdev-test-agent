@@ -5,3 +5,7 @@ coverage/
 .env
 .DS_Store
 *.log
+server/target/
+server/data/
+.test-agent-service/
+.test-agent-worker/

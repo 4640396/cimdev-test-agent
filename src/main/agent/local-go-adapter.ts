@@ -17,9 +17,12 @@ interface CommandResult {
   stderr: string
 }
 
-function run(executable: string, args: string[], cwd: string, emit: (event: AgentEvent) => void): Promise<CommandResult> {
+function run(executable: string, args: string[], cwd: string, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const abort = (): void => { child.kill() }
+    if (signal?.aborted) abort()
+    else signal?.addEventListener('abort', abort, { once: true })
     const stdout: string[] = []
     const stderr: string[] = []
     child.stdout.setEncoding('utf8')
@@ -28,6 +31,7 @@ function run(executable: string, args: string[], cwd: string, emit: (event: Agen
     child.stderr.on('data', (chunk: string) => stderr.push(chunk))
     child.on('error', reject)
     child.on('exit', (code) => {
+      signal?.removeEventListener('abort', abort)
       const errorText = stderr.join('').trim()
       if (errorText) emit({ level: 'warning', message: errorText })
       resolve({ code: code ?? 1, stdout: stdout.join(''), stderr: stderr.join('') })
@@ -46,7 +50,7 @@ function findGo(projectPath: string): string | null {
 export class LocalGoAdapter implements AgentAdapter {
   readonly name = 'Local Go Runner'
 
-  async run(input: TaskInput, emit: (event: AgentEvent) => void): Promise<AgentRunResult> {
+  async run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<AgentRunResult> {
     if (input.testTypes.length !== 1 || input.testTypes[0] !== 'unit') {
       throw new Error('本地 Go Runner 当前仅支持单元测试，请只选择“单元测试”')
     }
@@ -60,7 +64,8 @@ export class LocalGoAdapter implements AgentAdapter {
     const rawLogs: string[] = []
     for (const module of modules) {
       emit({ level: 'info', message: `执行真实测试：${module} / go test -json -cover ./...` })
-      const result = await run(go, ['test', '-json', '-cover', './...'], join(input.projectPath, module), emit)
+      if (signal?.aborted) throw new Error('任务已取消')
+      const result = await run(go, ['test', '-json', '-cover', './...'], join(input.projectPath, module), emit, signal)
       rawLogs.push(`===== ${module} =====\n${result.stdout}\n${result.stderr}`)
       for (const line of result.stdout.split(/\r?\n/)) {
         if (!line.trim()) continue

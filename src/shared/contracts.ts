@@ -1,5 +1,5 @@
 export type TestType = 'unit' | 'regression' | 'ui'
-export type TaskStatus = 'idle' | 'planning' | 'running' | 'completed' | 'failed'
+export type TaskStatus = 'idle' | 'queued' | 'planning' | 'running' | 'completed' | 'failed' | 'cancelled'
 export type LaneStatus = 'pending' | 'running' | 'passed' | 'failed'
 
 export interface TaskInput {
@@ -7,6 +7,7 @@ export interface TaskInput {
   systemName: string
   version: string
   testTypes: TestType[]
+  requiredCapabilities?: string[]
 }
 
 export interface ProjectSelection {
@@ -47,9 +48,32 @@ export interface TaskSnapshot {
   }
 }
 
+export interface ProjectRecord {
+  id: string
+  name: string
+  projectPath: string
+  defaultVersion: string
+  defaultTestTypes: TestType[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ScheduleRecord {
+  id: string
+  projectId: string
+  intervalMinutes: number
+  enabled: boolean
+  nextRunAt: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface DesktopApi {
   selectProject(): Promise<ProjectSelection | null>
   getRuntimeStatus(): Promise<RuntimeStatus>
   startTask(input: TaskInput): Promise<{ taskId: string }>
+  getTask(taskId: string): Promise<TaskSnapshot | null>
+  cancelTask(taskId: string): Promise<TaskSnapshot | null>
+  retryTask(taskId: string): Promise<{ taskId: string } | null>
   subscribeTask(listener: (snapshot: TaskSnapshot) => void): () => void
 }

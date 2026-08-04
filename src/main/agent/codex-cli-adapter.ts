@@ -108,7 +108,7 @@ export class CodexCliAdapter implements AgentAdapter {
 
   constructor(private readonly executable: string) {}
 
-  run(input: TaskInput, emit: (event: AgentEvent) => void): Promise<AgentRunResult> {
+  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<AgentRunResult> {
     return new Promise((resolveRun, reject) => {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const outputDirectory = join(input.projectPath, '.test-agent', 'results', stamp)
@@ -148,6 +148,12 @@ export class CodexCliAdapter implements AgentAdapter {
         child.kill()
         finishError(new Error('Codex CLI 执行超过 30 分钟，任务已终止'))
       }, Number(process.env.CODEX_CLI_TIMEOUT_MS ?? 30 * 60 * 1000))
+      const abort = (): void => {
+        child.kill()
+        finishError(new Error('任务已取消'))
+      }
+      if (signal?.aborted) abort()
+      else signal?.addEventListener('abort', abort, { once: true })
 
       const consumeLine = (line: string): void => {
         if (!line.trim()) return
@@ -175,6 +181,7 @@ export class CodexCliAdapter implements AgentAdapter {
       })
       child.on('error', finishError)
       child.on('exit', (code) => {
+        signal?.removeEventListener('abort', abort)
         if (settled) return
         settled = true
         clearTimeout(timer)

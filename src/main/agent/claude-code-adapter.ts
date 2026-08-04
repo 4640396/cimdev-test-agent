@@ -74,7 +74,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   constructor(private readonly executable: string) {}
 
-  run(input: TaskInput, emit: (event: AgentEvent) => void): Promise<AgentRunResult> {
+  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<AgentRunResult> {
     return new Promise((resolve, reject) => {
       const pathParts = [
         join(input.projectPath, '.preview-toolchain', 'go', 'bin'),
@@ -98,6 +98,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe']
       })
+      const abort = (): void => {
+        child.kill()
+        reject(new Error('任务已取消'))
+      }
+      if (signal?.aborted) abort()
+      else signal?.addEventListener('abort', abort, { once: true })
       const stdout: string[] = []
       const timer = setTimeout(() => {
         child.kill()
@@ -116,6 +122,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         reject(error)
       })
       child.on('exit', (code) => {
+        signal?.removeEventListener('abort', abort)
         clearTimeout(timer)
         if (code !== 0) return reject(new Error(`Claude Code 执行失败，退出码 ${code ?? 'unknown'}`))
         try {
