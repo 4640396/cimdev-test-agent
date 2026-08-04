@@ -3,9 +3,7 @@ import { join } from 'node:path'
 import { basename } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { resolveClaudeExecutable } from './agent/claude-code-adapter.js'
-import { resolveCodexExecutable } from './agent/codex-cli-adapter.js'
-import type { TaskInput, TaskSnapshot, TestType } from '../shared/contracts.js'
+import type { TaskInput, TaskSnapshot, TestType } from '../../../../contracts/src/contracts.js'
 
 let mainWindow: BrowserWindow | null = null
 const execFileAsync = promisify(execFile)
@@ -113,53 +111,18 @@ app.whenReady().then(() => {
   ipcMain.handle('runtime:status', async () => {
     try {
       await serverRequest('/actuator/health')
+      const runtime = await serverRequest<{ workers?: Array<{ status?: string; capabilities?: string[] }> }>('/api/runtime')
+      const onlineWorkers = (runtime.workers ?? []).filter((worker) => worker.status === 'ONLINE')
+      const providers = [...new Set(onlineWorkers.flatMap((worker) => worker.capabilities ?? []).filter((capability) => capability.endsWith('-cli') || capability === 'cimicode'))]
+      return {
+        mode: onlineWorkers.length > 0 ? 'real' : 'unavailable',
+        provider: providers.join(', ') || null,
+        message: onlineWorkers.length > 0
+          ? `Java控制服务已连接，在线Worker ${onlineWorkers.length}个`
+          : 'Java控制服务已连接，当前没有在线Worker'
+      }
     } catch {
       return { mode: 'unavailable', provider: null, message: `Java控制服务不可用：${serverUrl}` }
-    }
-    if (process.env.TEST_AGENT_PROVIDER === 'cimicode') {
-      const configured = process.env.CIMICODE_ENABLE_REAL === 'true' && Boolean(process.env.CIMICODE_EXECUTABLE)
-      return {
-        mode: configured ? 'real' : 'unavailable',
-        provider: configured ? 'cimicode' : null,
-        message: configured ? '真实模式：CimiCode' : 'CimiCode 尚未完成真实调用配置'
-      }
-    }
-    if (process.env.TEST_AGENT_PROVIDER === 'codex-cli') {
-      const executable = resolveCodexExecutable()
-      if (!executable) return { mode: 'unavailable', provider: null, message: '未找到可调用的 Codex CLI' }
-      try {
-        const command = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : executable
-        const args = process.platform === 'win32'
-          ? ['/d', '/s', '/c', executable, 'login', 'status']
-          : ['login', 'status']
-        const { stdout, stderr } = await execFileAsync(command, args, { windowsHide: true, timeout: 10000 })
-        const status = `${stdout}\n${stderr}`
-        return /Logged in/i.test(status)
-          ? { mode: 'real', provider: 'codex-cli', message: '真实模式：Codex CLI 已登录' }
-          : { mode: 'unavailable', provider: 'codex-cli', message: 'Codex CLI 已安装但尚未登录，请先执行 codex login' }
-      } catch {
-        return { mode: 'unavailable', provider: 'codex-cli', message: 'Codex CLI 存在，但登录状态检查失败' }
-      }
-    }
-    if (process.env.TEST_AGENT_PROVIDER !== 'claude-code') {
-      return { mode: 'real', provider: 'local-go', message: '真实模式：Local Go Runner；Claude Code 可作为后续增强层' }
-    }
-    const executable = resolveClaudeExecutable()
-    if (!executable) return { mode: 'unavailable', provider: null, message: '未安装 Claude Code' }
-    if (process.env.ANTHROPIC_API_KEY) {
-      return { mode: 'real', provider: 'claude-code', message: '真实模式：Claude Code 使用 ANTHROPIC_API_KEY' }
-    }
-    if (process.env.ANTHROPIC_AUTH_TOKEN && process.env.ANTHROPIC_BASE_URL) {
-      return { mode: 'real', provider: 'claude-code', message: '真实模式：Claude Code 使用企业 LLM Gateway' }
-    }
-    try {
-      const { stdout } = await execFileAsync(executable, ['auth', 'status'], { windowsHide: true, timeout: 5000 })
-      const status = JSON.parse(stdout) as { loggedIn?: boolean }
-      return status.loggedIn
-        ? { mode: 'real', provider: 'claude-code', message: '真实模式：Claude Code 已登录' }
-        : { mode: 'unavailable', provider: 'claude-code', message: 'Claude Code 已安装但尚未登录，请先执行 claude auth login' }
-    } catch {
-      return { mode: 'unavailable', provider: 'claude-code', message: '无法读取 Claude Code 登录状态' }
     }
   })
 

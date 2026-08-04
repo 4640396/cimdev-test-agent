@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { DesktopApi, TaskInput, TaskSnapshot } from '../shared/contracts.js'
+import type { DesktopApi, TaskInput, TaskSnapshot } from '../../../../contracts/src/contracts.js'
 
 const api: DesktopApi = {
   selectProject: () => ipcRenderer.invoke('project:select'),

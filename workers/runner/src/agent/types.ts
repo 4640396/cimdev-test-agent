@@ -1,4 +1,4 @@
-import type { TaskInput, TestType } from '../../shared/contracts.js'
+import type { TaskInput, TestType } from '../../../../contracts/src/contracts.js'
 
 export interface AgentEvent {
   level: 'info' | 'success' | 'warning' | 'error'

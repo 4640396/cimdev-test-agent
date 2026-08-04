@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import type { RuntimeStatus, TaskInput, TaskSnapshot, TestType } from '../../shared/contracts'
+import type { RuntimeStatus, TaskInput, TaskSnapshot, TestType } from '../../../../../contracts/src/contracts'
 import { emptyLanes, laneLabels, progressOf } from './task-state'
 
 const form = reactive<TaskInput>({

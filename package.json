@@ -7,12 +7,11 @@
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
-    "typecheck": "vue-tsc --noEmit && tsc --noEmit -p src/main/tsconfig.json && tsc --noEmit -p src/preload/tsconfig.json",
+    "typecheck": "vue-tsc --noEmit -p apps/desktop/src/renderer/tsconfig.json && tsc --noEmit -p apps/desktop/src/main/tsconfig.json && tsc --noEmit -p apps/desktop/src/preload/tsconfig.json && tsc --noEmit -p workers/runner/tsconfig.json",
     "test": "vitest run",
     "build": "npm run typecheck && electron-vite build",
-    "service": "node out/main/service-cli.js",
     "worker": "node out/main/worker-cli.js",
-    "server:build": "mvn -f server/pom.xml package"
+    "server:build": "mvn -f services/control-server/pom.xml package"
   },
   "dependencies": {
     "vue": "^3.5.13"

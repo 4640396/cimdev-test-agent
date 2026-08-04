@@ -1,0 +1,3 @@
+# Contracts
+
+保存Desktop与Runner共享的TypeScript契约。Java控制服务的HTTP契约后续以OpenAPI为权威来源，并由生成代码替代手工重复类型。

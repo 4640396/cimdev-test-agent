@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
-import type { TaskInput } from '../shared/contracts.js'
+import type { TaskInput } from '../../../contracts/src/contracts.js'
 
 interface ClaimedTask { taskId: string; input: TaskInput }
 

@@ -6,7 +6,7 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node", "electron"]
+    "types": ["node"]
   },
-  "include": ["./**/*.ts", "../shared/**/*.ts"]
+  "include": ["src/**/*.ts", "../../contracts/src/**/*.ts"]
 }

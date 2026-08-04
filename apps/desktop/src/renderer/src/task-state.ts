@@ -1,4 +1,4 @@
-import type { LaneState, TaskSnapshot, TestType } from '../../shared/contracts'
+import type { LaneState, TaskSnapshot, TestType } from '../../../../../contracts/src/contracts'
 
 export const laneLabels: Record<TestType, string> = {
   unit: '单元测试',

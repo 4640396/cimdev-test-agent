@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import type { TaskInput } from '../../shared/contracts.js'
+import type { TaskInput } from '../../../../contracts/src/contracts.js'
 import type { AgentAdapter, AgentEvent, AgentRunResult } from './types.js'
 
 interface GoEvent {

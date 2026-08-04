@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import type { TaskInput } from '../../shared/contracts.js'
+import type { TaskInput } from '../../../../contracts/src/contracts.js'
 import type { AgentAdapter, AgentEvent, AgentRunResult } from '../agent/types.js'
 
 export class ProcessCimiCodeAdapter implements AgentAdapter {

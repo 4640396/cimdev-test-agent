@@ -5,20 +5,28 @@ import { resolve } from 'node:path'
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
-    build: { rollupOptions: { input: { index: resolve('src/main/index.ts'), 'service-cli': resolve('src/main/service-cli.ts'), 'worker-cli': resolve('src/main/worker-cli.ts') } } }
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve('apps/desktop/src/main/index.ts'),
+          'worker-cli': resolve('workers/runner/src/worker-cli.ts')
+        }
+      }
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: resolve('src/preload/index.ts'),
+        input: resolve('apps/desktop/src/preload/index.ts'),
         output: { format: 'cjs', entryFileNames: '[name].cjs' }
       }
     }
   },
   renderer: {
-    root: 'src/renderer',
+    root: resolve('apps/desktop/src/renderer'),
     plugins: [vue()],
-    resolve: { alias: { '@renderer': resolve('src/renderer/src') } }
+    resolve: { alias: { '@renderer': resolve('apps/desktop/src/renderer/src') } },
+    build: { rollupOptions: { input: resolve('apps/desktop/src/renderer/index.html') } }
   }
 })
