@@ -1,26 +1,35 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import type { TaskInput, TaskSnapshot, TestType } from '../../shared/contracts'
+import type { RuntimeStatus, TaskInput, TaskSnapshot, TestType } from '../../shared/contracts'
 import { emptyLanes, laneLabels, progressOf } from './task-state'
 
 const form = reactive<TaskInput>({
   projectPath: '',
-  systemName: 'CIMDEV-01',
-  version: 'release/2.6',
+  systemName: '',
+  version: '',
   testTypes: ['unit', 'regression', 'ui']
 })
 const snapshot = ref<TaskSnapshot | null>(null)
 const error = ref('')
 const starting = ref(false)
+const runtime = ref<RuntimeStatus>({ mode: 'unavailable', provider: null, message: '正在读取运行模式' })
 let unsubscribe: (() => void) | undefined
 
 const lanes = computed(() => snapshot.value?.lanes ?? emptyLanes(form.testTypes))
 const progress = computed(() => progressOf(snapshot.value))
-const canStart = computed(() => Boolean(form.projectPath && form.systemName && form.testTypes.length && !starting.value))
+const canStart = computed(() => Boolean(runtime.value.mode === 'real' && form.projectPath && form.systemName && form.testTypes.length && !starting.value))
 
 async function selectProject(): Promise<void> {
-  const path = await window.testAgent.selectProject()
-  if (path) form.projectPath = path
+  error.value = ''
+  try {
+    const selection = await window.testAgent.selectProject()
+    if (!selection) return
+    form.projectPath = selection.path
+    form.systemName = selection.detectedSystem
+    form.version = selection.detectedVersion
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '目录选择失败'
+  }
 }
 
 function toggleType(type: TestType): void {
@@ -42,6 +51,7 @@ async function startTask(): Promise<void> {
 }
 
 onMounted(() => {
+  void window.testAgent.getRuntimeStatus().then((status) => (runtime.value = status))
   unsubscribe = window.testAgent.subscribeTask((next) => (snapshot.value = next))
 })
 onBeforeUnmount(() => unsubscribe?.())
@@ -50,8 +60,8 @@ onBeforeUnmount(() => unsubscribe?.())
 <template>
   <main class="shell">
     <header class="topbar">
-      <div class="brand"><span class="logo">≡</span><strong>CIMDEV Test Agent · QA Pipeline</strong></div>
-      <button class="dark-button" :disabled="!canStart" @click="startTask">▶ {{ starting ? '启动中' : '发起任务' }}</button>
+      <div class="brand"><span class="logo">≡</span><strong>CIMDEV Test Agent · QA Pipeline</strong><small class="mode-badge" :class="runtime.mode">{{ runtime.mode === 'real' ? '真实模式' : '未就绪' }}</small></div>
+      <button class="dark-button" :disabled="!canStart" @click="startTask">▶ {{ starting ? '启动中' : '发起真实测试' }}</button>
     </header>
 
     <section class="hero-grid">
@@ -59,8 +69,8 @@ onBeforeUnmount(() => unsubscribe?.())
         <h2>① 测试任务输入</h2>
         <label>系统 / 版本</label>
         <div class="two-columns">
-          <input v-model="form.systemName" aria-label="系统名称" />
-          <input v-model="form.version" aria-label="版本" />
+          <input v-model="form.systemName" aria-label="系统名称" placeholder="选择目录后自动识别" />
+          <input v-model="form.version" aria-label="版本" placeholder="Git 分支或手工填写" />
         </div>
         <label>项目目录</label>
         <div class="project-picker">
@@ -76,7 +86,7 @@ onBeforeUnmount(() => unsubscribe?.())
       <article class="console-panel">
         <div class="console-title"><h2>② Agent 执行日志</h2><span><i></i><i></i><i></i></span></div>
         <div class="console-lines">
-          <p v-if="!snapshot">等待发起任务。初版默认使用安全模拟模式。</p>
+          <p v-if="!snapshot">{{ runtime.message }}</p>
           <p v-for="log in snapshot?.logs" :key="log.id" :class="log.level"><b>[{{ log.time }}]</b> {{ log.message }}</p>
         </div>
       </article>
@@ -88,8 +98,9 @@ onBeforeUnmount(() => unsubscribe?.())
       <article class="panel plan-card">
         <h2>③ 测试计划</h2>
         <button class="primary" :disabled="!canStart" @click="startTask">生成与确认</button>
-        <label>输出制品</label>
-        <div v-for="artifact in (snapshot?.artifacts.length ? snapshot.artifacts : ['test-plan.json','test-cases.md','knowledge-ref.json'])" :key="artifact" class="artifact">{{ artifact }}<span>↓</span></div>
+        <label>真实输出制品</label>
+        <div v-if="!snapshot?.artifacts.length" class="artifact">任务执行后显示真实文件</div>
+        <div v-for="artifact in snapshot?.artifacts" :key="artifact" class="artifact">{{ artifact }}<span>↓</span></div>
       </article>
 
       <article class="dispatch-card">
@@ -110,11 +121,11 @@ onBeforeUnmount(() => unsubscribe?.())
         <p>汇总三类测试执行结果</p>
         <div class="report-number"><strong>{{ snapshot?.report?.passed ?? '--' }}</strong><span>通过</span></div>
         <div class="report-number"><strong>{{ snapshot?.report?.failed ?? '--' }}</strong><span>失败</span></div>
-        <div class="report-number"><strong>{{ snapshot?.report?.coverage ?? '--' }}{{ snapshot?.report ? '%' : '' }}</strong><span>覆盖率</span></div>
+        <div class="report-number"><strong>{{ snapshot?.report ? (snapshot.report.coverage === null ? 'N/A' : `${snapshot.report.coverage}%`) : '--' }}</strong><span>覆盖率</span></div>
         <button class="report-button" :disabled="!snapshot?.report">查看报告</button>
       </article>
     </section>
 
-    <footer>初版原型 · CimiCode真实调用默认关闭 · 设置受控环境变量后启用</footer>
+    <footer>{{ runtime.message }}</footer>
   </main>
 </template>

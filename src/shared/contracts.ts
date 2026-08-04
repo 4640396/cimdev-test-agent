@@ -9,6 +9,18 @@ export interface TaskInput {
   testTypes: TestType[]
 }
 
+export interface ProjectSelection {
+  path: string
+  detectedSystem: string
+  detectedVersion: string
+}
+
+export interface RuntimeStatus {
+  mode: 'unavailable' | 'real'
+  provider: 'local-go' | 'claude-code' | 'codex-cli' | 'cimicode' | null
+  message: string
+}
+
 export interface TaskLog {
   id: string
   time: string
@@ -31,12 +43,13 @@ export interface TaskSnapshot {
   report?: {
     passed: number
     failed: number
-    coverage: number
+    coverage: number | null
   }
 }
 
 export interface DesktopApi {
-  selectProject(): Promise<string | null>
+  selectProject(): Promise<ProjectSelection | null>
+  getRuntimeStatus(): Promise<RuntimeStatus>
   startTask(input: TaskInput): Promise<{ taskId: string }>
   subscribeTask(listener: (snapshot: TaskSnapshot) => void): () => void
 }

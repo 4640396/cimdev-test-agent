@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { BrowserWindow } from 'electron'
-import type { CimiCodeAdapter } from './cimicode/adapter.js'
+import type { AgentAdapter } from './agent/types.js'
 import type { LaneState, TaskInput, TaskLog, TaskSnapshot, TestType } from '../shared/contracts.js'
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -9,7 +9,7 @@ const labels: Record<TestType, string> = { unit: '单元测试', regression: '�
 export class TaskEngine {
   constructor(
     private readonly window: BrowserWindow,
-    private readonly adapter: CimiCodeAdapter | null
+    private readonly adapter: AgentAdapter | null
   ) {}
 
   async start(input: TaskInput): Promise<{ taskId: string }> {
@@ -28,24 +28,19 @@ export class TaskEngine {
 
   private async run(snapshot: TaskSnapshot, input: TaskInput): Promise<void> {
     try {
-      await this.step(snapshot, '正在扫描项目结构与技术栈', 550)
-      await this.step(snapshot, '正在准备 Workspace 知识查询上下文（初版为模拟数据）', 650)
-      await this.step(snapshot, '已生成测试计划，准备三路分发', 550, 'success')
-      snapshot.artifacts = ['test-plan.json', 'test-cases.md', 'knowledge-ref.json']
+      await this.step(snapshot, `正在读取项目目录：${input.projectPath}`, 200)
+      if (!this.adapter) throw new Error('没有可用的真实 Agent Provider，请安装并登录 Claude Code，或配置 CimiCode')
       snapshot.status = 'running'
       this.publish(snapshot)
-
-      if (this.adapter) {
-        this.emit(snapshot, 'info', '已启用真实 CimiCode CLI 适配器')
-        await this.adapter.run(input, (event) => this.emit(snapshot, event.level, event.message))
-      } else {
-        this.emit(snapshot, 'warning', '当前为安全模拟模式；设置 CimiCode 环境变量后可启用真实调用')
-      }
-
-      for (const lane of snapshot.lanes) await this.runLane(snapshot, lane)
+      this.emit(snapshot, 'info', `正在调用真实 Provider：${this.adapter.name}`)
+      snapshot.lanes.forEach((lane) => { lane.status = 'running'; lane.summary = '由真实 Agent 分析与执行中' })
+      this.publish(snapshot)
+      const result = await this.adapter.run(input, (event) => this.emit(snapshot, event.level, event.message))
+      snapshot.lanes = result.lanes
+      snapshot.artifacts = result.artifacts
       snapshot.status = 'completed'
-      snapshot.report = { passed: 46, failed: 2, coverage: 82 }
-      this.emit(snapshot, 'success', '三类测试执行完成，综合报告已生成')
+      snapshot.report = result.report
+      this.emit(snapshot, result.report.failed === 0 ? 'success' : 'warning', '真实测试执行结束，结果已回填')
     } catch (error) {
       snapshot.status = 'failed'
       this.emit(snapshot, 'error', error instanceof Error ? error.message : '未知执行错误')
