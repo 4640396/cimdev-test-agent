@@ -5,15 +5,16 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.Optional;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
 
 import static com.cimdev.testagent.ApiModels.*;
 
@@ -29,10 +30,19 @@ class TaskStore {
         this.json = json;
     }
 
-    void insertTask(String id, String projectId, TaskInput input, String triggerType) {
+    Optional<TaskView> insertTask(String id, String projectId, TaskInput input, String triggerType, String idempotencyKey) {
         var now = Timestamp.from(Instant.now());
-        jdbc.update("INSERT INTO test_tasks(id,project_id,input_json,status,trigger_type,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                id, projectId, write(input), "QUEUED", triggerType, now, now);
+        try {
+            jdbc.update("INSERT INTO test_tasks(id,project_id,input_json,status,trigger_type,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                    id, projectId, write(input), "QUEUED", triggerType, idempotencyKey, now, now);
+            return Optional.empty();
+        } catch (DataIntegrityViolationException duplicate) {
+            if (idempotencyKey != null) {
+                var rows = jdbc.query("SELECT id FROM test_tasks WHERE idempotency_key=?", (rs, row) -> rs.getString(1), idempotencyKey);
+                if (!rows.isEmpty()) return Optional.of(task(rows.get(0)).orElseThrow());
+            }
+            throw duplicate;
+        }
     }
 
     Optional<TaskView> task(String id) {
@@ -122,6 +132,15 @@ class TaskStore {
                 worker.id(), worker.name(), write(worker.capabilities()), worker.status(), Timestamp.from(worker.lastHeartbeatAt()), now, now);
     }
 
+    void updateWorkerSecret(String id, String secretHash) {
+        jdbc.update("UPDATE workers SET secret_hash=?,updated_at=? WHERE id=?", secretHash, Timestamp.from(Instant.now()), id);
+    }
+
+    boolean verifyWorkerSecret(String id, String secretHash) {
+        var rows = jdbc.query("SELECT secret_hash FROM workers WHERE id=?", (rs, row) -> rs.getString(1), id);
+        return rows.size() == 1 && rows.get(0) != null && rows.get(0).equals(secretHash);
+    }
+
     void heartbeatWorker(String id) { jdbc.update("UPDATE workers SET status='ONLINE',last_heartbeat_at=?,updated_at=? WHERE id=?", Timestamp.from(Instant.now()), Timestamp.from(Instant.now()), id); }
 
     void markStaleWorkersOffline(Instant cutoff) { jdbc.update("UPDATE workers SET status='OFFLINE',updated_at=? WHERE status='ONLINE' AND last_heartbeat_at<?", Timestamp.from(Instant.now()), Timestamp.from(cutoff)); }
@@ -147,6 +166,11 @@ class TaskStore {
     void saveArtifact(String id, String taskId, String name, String path, String type, long size) {
         jdbc.update("INSERT INTO task_artifacts(id,task_id,original_name,storage_path,content_type,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)",
                 id, taskId, name, path, type, size, Timestamp.from(Instant.now()));
+    }
+
+    void insertAudit(String actor, String action, String taskId, String payload, String sourceIp) {
+        jdbc.update("INSERT INTO audit_log(actor,action,task_id,payload,source_ip,created_at) VALUES(?,?,?,?,?,?)",
+                actor, action, taskId, payload, sourceIp, Timestamp.from(Instant.now()));
     }
 
     List<java.util.Map<String, Object>> artifacts(String taskId) {

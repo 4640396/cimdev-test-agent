@@ -12,7 +12,9 @@ final class ApiModels {
     private ApiModels() {}
 
     record TaskInput(@NotBlank String projectPath, @NotBlank String systemName, String version, @NotEmpty List<String> testTypes, List<String> requiredCapabilities) {}
-    record CreateTaskRequest(String projectId, TaskInput input, String triggerType) {}
+    record CreateTaskRequest(String projectId, TaskInput input, String triggerType, String idempotencyKey) {
+        CreateTaskRequest(String projectId, TaskInput input, String triggerType) { this(projectId, input, triggerType, null); }
+    }
     record TaskLog(long id, String level, String message, Instant createdAt) {}
     record TaskView(String id, String projectId, TaskInput input, String status, String triggerType, String workerId,
                     JsonNode report, JsonNode artifacts, String errorMessage, Instant createdAt, Instant updatedAt, List<TaskLog> logs) {}
@@ -20,6 +22,7 @@ final class ApiModels {
     record ProjectView(String id, String name, String projectPath, String defaultVersion, List<String> defaultTestTypes, Instant createdAt, Instant updatedAt) {}
     record WorkerRegisterRequest(String id, @NotBlank String name, @NotEmpty List<String> capabilities) {}
     record WorkerView(String id, String name, List<String> capabilities, String status, Instant lastHeartbeatAt) {}
+    record WorkerRegisterResponse(String id, String name, List<String> capabilities, String status, Instant lastHeartbeatAt, String secret) {}
     record ClaimRequest(@NotBlank String workerId, @NotEmpty List<String> capabilities) {}
     record ClaimedTask(String taskId, TaskInput input) {}
     record AgentEvent(@NotBlank String level, @NotBlank String message) {}

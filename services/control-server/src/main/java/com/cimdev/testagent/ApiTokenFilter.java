@@ -11,25 +11,42 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Component
 class ApiTokenFilter extends OncePerRequestFilter {
-    private final String token;
+    private final Set<String> tokens;
 
-    ApiTokenFilter(@Value("${test-agent.api-token:}") String token) { this.token = token; }
+    ApiTokenFilter(@Value("${test-agent.api-token:}") String token) {
+        this.tokens = Arrays.stream(token.split(",")).map(String::trim).filter(item -> !item.isEmpty()).collect(Collectors.toSet());
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws ServletException, IOException {
-        if (token.isBlank() || request.getRequestURI().equals("/actuator/health")) {
+        if (request.getRequestURI().equals("/actuator/health")) {
             chain.doFilter(request, response);
+            return;
+        }
+        if (tokens.isEmpty()) {
+            unauthorized(response);
             return;
         }
         var supplied = request.getHeader("Authorization");
-        var expected = "Bearer " + token;
-        if (supplied != null && MessageDigest.isEqual(supplied.getBytes(StandardCharsets.UTF_8), expected.getBytes(StandardCharsets.UTF_8))) {
-            chain.doFilter(request, response);
-            return;
+        if (supplied != null && supplied.startsWith("Bearer ")) {
+            var candidate = supplied.substring("Bearer ".length()).getBytes(StandardCharsets.UTF_8);
+            for (var expected : tokens) {
+                if (MessageDigest.isEqual(candidate, expected.getBytes(StandardCharsets.UTF_8))) {
+                    chain.doFilter(request, response);
+                    return;
+                }
+            }
         }
+        unauthorized(response);
+    }
+
+    private void unauthorized(HttpServletResponse response) throws IOException {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"error\":\"Unauthorized\"}");

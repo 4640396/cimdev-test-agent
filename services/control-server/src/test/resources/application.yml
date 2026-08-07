@@ -6,6 +6,7 @@ spring:
   flyway:
     enabled: true
 test-agent:
+  api-token: test-token
   storage-root: ${java.io.tmpdir}/cimdev-test-agent-test
   task-lease-seconds: 60
   scheduler-delay-ms: 3600000

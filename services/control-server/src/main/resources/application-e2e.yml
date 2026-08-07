@@ -4,4 +4,5 @@ spring:
     username: sa
     password: ''
 test-agent:
+  api-token: ${TEST_AGENT_API_TOKEN:e2e-token}
   storage-root: ${TEST_AGENT_STORAGE_ROOT:./data/e2e-artifacts}
