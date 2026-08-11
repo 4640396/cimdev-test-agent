@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import type { TaskInput } from '../../../../contracts/src/contracts.js'
 import type { AgentAdapter, AgentEvent, AgentRunResult } from './types.js'
+import { killProcessTree } from '../proc.js'
 
 const RESULT_SCHEMA = {
   type: 'object',
@@ -145,11 +146,11 @@ export class CodexCliAdapter implements AgentAdapter {
         reject(error)
       }
       const timer = setTimeout(() => {
-        child.kill()
+        killProcessTree(child.pid ?? 0)
         finishError(new Error('Codex CLI 执行超过 30 分钟，任务已终止'))
       }, Number(process.env.CODEX_CLI_TIMEOUT_MS ?? 30 * 60 * 1000))
       const abort = (): void => {
-        child.kill()
+        killProcessTree(child.pid ?? 0)
         finishError(new Error('任务已取消'))
       }
       if (signal?.aborted) abort()

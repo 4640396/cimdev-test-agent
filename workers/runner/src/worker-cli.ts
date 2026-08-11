@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { platform, release } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
@@ -18,6 +20,49 @@ const secretPath = join(dataDirectory, 'worker-secret.txt')
 let workerSecret = existsSync(secretPath) ? readFileSync(secretPath, 'utf8').trim() : ''
 const workerName = process.env.TEST_AGENT_WORKER_NAME ?? `${process.env.COMPUTERNAME ?? 'worker'}-${workerId.slice(0, 8)}`
 let stopping = false
+
+const TOOL_CHECKS: Record<string, { command: string; args: string[] }> = {
+  node: { command: 'node', args: ['--version'] },
+  java: { command: 'java', args: ['-version'] },
+  go: { command: 'go', args: ['version'] },
+  codex: { command: 'codex', args: ['--version'] }
+}
+
+function toolVersion(command: string, args: string[]): string | null {
+  try {
+    const result = spawnSync(command, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+    if (result.status !== 0) return null
+    const text = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+    return text.split(/\r?\n/)[0].trim() || null
+  } catch {
+    return null
+  }
+}
+
+interface PreflightResult {
+  ok: boolean
+  issues: string[]
+  summary: string
+}
+
+function preflightEnvironment(input: TaskInput, provider: string): PreflightResult {
+  const issues: string[] = []
+  const details: string[] = []
+  try {
+    if (!statSync(input.projectPath).isDirectory()) issues.push(`项目路径不是目录：${input.projectPath}`)
+  } catch {
+    issues.push(`项目路径不存在：${input.projectPath}`)
+  }
+  for (const capability of input.requiredCapabilities ?? []) {
+    const check = TOOL_CHECKS[capability]
+    if (!check) continue
+    const version = toolVersion(check.command, check.args)
+    if (version) details.push(`${capability} ${version}`)
+    else issues.push(`缺少工具链：${capability}`)
+  }
+  const summary = [`os=${platform()} ${release()}`, `node=${process.version}`, `provider=${provider}`, `worker=${workerName}`, ...details].join(' | ')
+  return { ok: issues.length === 0, issues, summary }
+}
 
 function workerHeaders(): Record<string, string> {
   return { 'x-worker-id': workerId, 'x-worker-secret': workerSecret }
@@ -61,6 +106,13 @@ async function uploadArtifacts(task: ClaimedTask, result: AgentRunResult): Promi
 async function runTask(task: ClaimedTask): Promise<void> {
   const adapter = createAgentAdapter()
   if (!adapter) throw new Error('No executable Agent Provider is configured')
+  const preflight = preflightEnvironment(task.input, adapter.name)
+  if (!preflight.ok) {
+    const message = `环境预检未通过：${preflight.issues.join('；')}`
+    await emit(task.taskId, { level: 'error', message })
+    throw new Error(message)
+  }
+  await emit(task.taskId, { level: 'info', message: `环境预检通过：${preflight.summary}` })
   const controller = new AbortController()
   const heartbeat = setInterval(() => {
     void request(`/api/worker/tasks/${task.taskId}/heartbeat?workerId=${encodeURIComponent(workerId)}`, { method: 'POST' }, workerHeaders()).catch(console.error)

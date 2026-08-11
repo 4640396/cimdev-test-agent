@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { TaskInput } from '../../../../contracts/src/contracts.js'
 import type { AgentAdapter, AgentEvent, AgentRunResult } from './types.js'
+import { killProcessTree } from '../proc.js'
 
 const RESULT_SCHEMA = JSON.stringify({
   type: 'object',
@@ -12,8 +13,8 @@ const RESULT_SCHEMA = JSON.stringify({
       items: {
         type: 'object',
         properties: {
-          type: { enum: ['unit', 'regression', 'ui'] },
-          status: { enum: ['passed', 'failed'] },
+          type: { type: 'string', enum: ['unit', 'regression', 'ui'] },
+          status: { type: 'string', enum: ['passed', 'failed'] },
           summary: { type: 'string' }
         },
         required: ['type', 'status', 'summary'],
@@ -25,7 +26,7 @@ const RESULT_SCHEMA = JSON.stringify({
       properties: {
         passed: { type: 'integer', minimum: 0 },
         failed: { type: 'integer', minimum: 0 },
-        coverage: { type: ['number', 'null'], minimum: 0, maximum: 100 }
+        coverage: { anyOf: [{ type: 'number', minimum: 0, maximum: 100 }, { type: 'null' }] }
       },
       required: ['passed', 'failed', 'coverage'],
       additionalProperties: false
@@ -99,14 +100,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         stdio: ['ignore', 'pipe', 'pipe']
       })
       const abort = (): void => {
-        child.kill()
+        killProcessTree(child.pid ?? 0)
         reject(new Error('任务已取消'))
       }
       if (signal?.aborted) abort()
       else signal?.addEventListener('abort', abort, { once: true })
       const stdout: string[] = []
       const timer = setTimeout(() => {
-        child.kill()
+        killProcessTree(child.pid ?? 0)
         reject(new Error('Claude Code 执行超过 30 分钟，任务已终止'))
       }, 30 * 60 * 1000)
 

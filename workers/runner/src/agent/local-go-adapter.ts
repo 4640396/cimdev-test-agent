@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import type { TaskInput } from '../../../../contracts/src/contracts.js'
 import type { AgentAdapter, AgentEvent, AgentRunResult } from './types.js'
+import { killProcessTree } from '../proc.js'
 
 interface GoEvent {
   Action?: string
@@ -20,7 +21,7 @@ interface CommandResult {
 function run(executable: string, args: string[], cwd: string, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-    const abort = (): void => { child.kill() }
+    const abort = (): void => { killProcessTree(child.pid ?? 0) }
     if (signal?.aborted) abort()
     else signal?.addEventListener('abort', abort, { once: true })
     const stdout: string[] = []
