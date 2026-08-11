@@ -5,6 +5,7 @@ import { platform, release } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
+import { computeMetrics, countAssertionFiles, runNodeUnitTests } from './validator.js'
 import type { TaskInput } from '../../../contracts/src/contracts.js'
 
 interface ClaimedTask { taskId: string; input: TaskInput }
@@ -90,6 +91,10 @@ async function emit(taskId: string, event: AgentEvent): Promise<void> {
   await request(`/api/worker/tasks/${taskId}/events`, { method: 'POST', body: JSON.stringify(event) }, workerHeaders())
 }
 
+async function emitStage(taskId: string, stage: string): Promise<void> {
+  await emit(taskId, { level: 'info', message: `进入阶段：${stage}`, stage })
+}
+
 async function uploadArtifacts(task: ClaimedTask, result: AgentRunResult): Promise<void> {
   for (const artifact of result.artifacts) {
     const absolute = resolve(task.input.projectPath, artifact)
@@ -120,9 +125,53 @@ async function runTask(task: ClaimedTask): Promise<void> {
   }, 15_000)
   try {
     await emit(task.taskId, { level: 'info', message: `Worker使用 ${adapter.name} 执行真实测试` })
+    await emitStage(task.taskId, 'GENERATING')
     const result = await adapter.run(task.input, (event) => { void emit(task.taskId, event).catch(console.error) }, controller.signal)
-    await uploadArtifacts(task, result)
-    await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result }) }, workerHeaders())
+    if (task.input.testTypes.includes('unit') && (task.input.requiredCapabilities ?? []).includes('node')) {
+      await emitStage(task.taskId, 'VALIDATING')
+      const outcome = runNodeUnitTests(task.input.projectPath)
+      const assertions = countAssertionFiles(task.input.projectPath)
+      const metrics = computeMetrics(outcome, assertions)
+      if (outcome.fail > 0 || outcome.compileError) {
+        throw new Error(`独立验证未通过：${outcome.fail} 个测试失败${outcome.compileError ? '，存在编译错误' : ''}`)
+      }
+      if (result.report.passed !== outcome.pass || result.report.failed !== outcome.fail) {
+        await emit(task.taskId, {
+          level: 'warning',
+          message: `独立验证与 Agent 报告不一致（Agent ${result.report.passed}/${result.report.failed}，独立 ${outcome.pass}/${outcome.fail}），以独立验证为准`
+        })
+      }
+      const lanes = result.lanes.map((lane) => lane.type === 'unit'
+        ? { ...lane, summary: `${lane.summary}（独立验证 ${outcome.pass} 通过 / ${outcome.fail} 失败，覆盖率 ${outcome.coverage ?? 'N/A'}%）` }
+        : lane)
+      const coverageTarget = task.input.coverageTarget ?? 60
+      const coveragePassed = outcome.coverage !== null && outcome.coverage >= coverageTarget
+      const gate = {
+        coverageTarget,
+        coverage: outcome.coverage,
+        effectiveRate: metrics.effectiveRate,
+        passed: coveragePassed,
+        reason: coveragePassed ? '覆盖率达标' : `覆盖率 ${outcome.coverage ?? 'N/A'}% 未达到目标 ${coverageTarget}%`
+      }
+      const report = {
+        ...result.report,
+        passed: outcome.pass,
+        failed: outcome.fail,
+        coverage: outcome.coverage,
+        metrics,
+        gate
+      }
+      await emitStage(task.taskId, 'ANALYZING')
+      await emit(task.taskId, {
+        level: coveragePassed ? 'success' : 'warning',
+        message: `覆盖率门禁：${gate.reason}；四率=编译${Math.round(metrics.compileRate * 100)}% 执行${Math.round(metrics.execRate * 100)}% 断言${Math.round(metrics.assertRate * 100)}% 有效${Math.round(metrics.effectiveRate * 100)}%`
+      })
+      await uploadArtifacts(task, result)
+      await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report, lanes, gate } }) }, workerHeaders())
+    } else {
+      await uploadArtifacts(task, result)
+      await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result }) }, workerHeaders())
+    }
   } catch (error) {
     if (!controller.signal.aborted) {
       await request(`/api/worker/tasks/${task.taskId}/fail`, { method: 'POST', body: JSON.stringify({ error: error instanceof Error ? error.message : 'Worker execution failed' }) }, workerHeaders())

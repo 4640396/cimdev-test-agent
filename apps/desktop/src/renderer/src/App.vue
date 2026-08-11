@@ -17,7 +17,7 @@ let unsubscribe: (() => void) | undefined
 
 const lanes = computed(() => snapshot.value?.lanes ?? emptyLanes(form.testTypes))
 const progress = computed(() => progressOf(snapshot.value))
-const taskActive = computed(() => snapshot.value?.status === 'queued' || snapshot.value?.status === 'planning' || snapshot.value?.status === 'running')
+const taskActive = computed(() => snapshot.value?.status === 'queued' || snapshot.value?.status === 'planning' || snapshot.value?.status === 'running' || snapshot.value?.status === 'needsReview')
 const canStart = computed(() => Boolean(runtime.value.mode === 'real' && form.projectPath && form.systemName && form.testTypes.length && !starting.value && !taskActive.value))
 
 async function selectProject(): Promise<void> {

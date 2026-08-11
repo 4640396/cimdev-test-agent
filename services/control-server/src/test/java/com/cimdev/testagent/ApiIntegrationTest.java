@@ -51,8 +51,11 @@ class ApiIntegrationTest {
 
         mvc.perform(post("/api/worker/tasks/{id}/events", taskId).headers(auth()).headers(worker("worker-1", workerSecret))
                 .contentType(MediaType.APPLICATION_JSON).content("""
-                {"level":"info","message":"mvn test passed"}
+                {"level":"info","message":"进入阶段：VALIDATING","stage":"VALIDATING"}
                 """)).andExpect(status().isOk());
+
+        mvc.perform(get("/api/tasks/{id}", taskId).headers(auth())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("VALIDATING"));
 
         mvc.perform(post("/api/worker/tasks/{id}/complete", taskId).headers(auth()).headers(worker("worker-1", workerSecret))
                 .contentType(MediaType.APPLICATION_JSON).content("""
@@ -61,10 +64,36 @@ class ApiIntegrationTest {
 
         mvc.perform(get("/api/tasks/{id}", taskId).headers(auth())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.report.passed").value(1))
+                .andExpect(jsonPath("$.stage").value("COMPLETED"))
                 .andExpect(jsonPath("$.logs.length()").value(4));
 
         assertThat(auditCount("task.create")).isGreaterThanOrEqualTo(1);
         assertThat(auditCount("task.complete")).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void needsReviewWhenCoverageGateFails() throws Exception {
+        var projectId = createProject("gate");
+        var workerSecret = registerWorker("worker-1", new String[]{"windows", "java"});
+
+        var task = mvc.perform(post("/api/tasks").headers(auth()).contentType(MediaType.APPLICATION_JSON).content("""
+                {"projectId":"%s","triggerType":"test"}
+                """.formatted(projectId))).andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString();
+        var taskId = JSON.readTree(task).path("id").asText();
+
+        mvc.perform(post("/api/worker/tasks/claim").headers(auth()).headers(worker("worker-1", workerSecret))
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"workerId":"worker-1","capabilities":["windows","java"]}
+                """)).andExpect(status().isOk()).andExpect(jsonPath("$.taskId").value(taskId));
+
+        mvc.perform(post("/api/worker/tasks/{id}/complete", taskId).headers(auth()).headers(worker("worker-1", workerSecret))
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"result":{"lanes":[{"type":"unit","status":"passed","summary":"2 passed"}],"report":{"passed":2,"failed":0,"coverage":40},"gate":{"coverageTarget":60,"coverage":40,"effectiveRate":1,"passed":false,"reason":"覆盖率 40% 未达到目标 60%"}}}
+                """)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("NEEDS_REVIEW"));
+
+        mvc.perform(get("/api/tasks/{id}", taskId).headers(auth())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("NEEDS_REVIEW"))
+                .andExpect(jsonPath("$.report.coverage").value(40));
     }
 
     @Test

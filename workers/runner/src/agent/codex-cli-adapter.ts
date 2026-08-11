@@ -95,6 +95,61 @@ function validateResult(value: unknown, projectPath: string): AgentRunResult {
   return result
 }
 
+function parseJsonFromText(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    // 尝试从 Markdown 代码块提取
+  }
+  const match = /```(?:json)?\s*([\s\S]*?)```/.exec(text)
+  if (match) {
+    try {
+      return JSON.parse(match[1])
+    } catch {
+      // 继续回退
+    }
+  }
+  return null
+}
+
+/** 优先读结果文件；失败时从事件流中回退提取符合结构的结果（模型最后消息不一定是 JSON）。 */
+function extractStructuredResult(resultPath: string, eventsPath: string): unknown {
+  try {
+    return JSON.parse(readFileSync(resultPath, 'utf8'))
+  } catch {
+    // 回退到事件流
+  }
+  let events = ''
+  try {
+    events = readFileSync(eventsPath, 'utf8')
+  } catch {
+    return null
+  }
+  for (const line of events.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>
+      const item = event.item as Record<string, unknown> | undefined
+      if (!item) continue
+      const candidates: unknown[] = []
+      if (Array.isArray(item.content)) {
+        for (const part of item.content as Array<Record<string, unknown>>) {
+          if (typeof part.text === 'string') candidates.push(part.text)
+        }
+      }
+      if (typeof item.text === 'string') candidates.push(item.text)
+      if (typeof item.output === 'string') candidates.push(item.output)
+      for (const candidate of candidates) {
+        const parsed = parseJsonFromText(candidate as string)
+        if (parsed && typeof parsed === 'object' && 'lanes' in parsed && 'report' in parsed && 'artifacts' in parsed) return parsed
+      }
+    } catch {
+      // 跳过异常行
+    }
+  }
+  return null
+}
+
 export function resolveCodexExecutable(): string | null {
   if (process.env.CODEX_CLI_EXECUTABLE && existsSync(process.env.CODEX_CLI_EXECUTABLE)) {
     return process.env.CODEX_CLI_EXECUTABLE
@@ -191,7 +246,9 @@ export class CodexCliAdapter implements AgentAdapter {
         writeFileSync(eventsPath, `${eventLines.join('\n')}\n`, 'utf8')
         if (code !== 0) return reject(new Error(`Codex CLI 执行失败，退出码 ${code ?? 'unknown'}`))
         try {
-          const result = validateResult(JSON.parse(readFileSync(resultPath, 'utf8')), input.projectPath)
+          const parsed = extractStructuredResult(resultPath, eventsPath)
+          if (parsed === null) return reject(new Error('Codex CLI 未返回可解析的结构化测试结果'))
+          const result = validateResult(parsed, input.projectPath)
           const ownArtifacts = [relative(input.projectPath, resultPath), relative(input.projectPath, eventsPath)]
           result.artifacts = [...new Set([...result.artifacts, ...ownArtifacts])]
           emit({ level: 'success', message: 'Codex CLI 已返回经过真实执行的结构化测试结果' })

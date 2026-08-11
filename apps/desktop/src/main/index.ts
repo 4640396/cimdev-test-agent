@@ -28,9 +28,9 @@ async function serverRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function taskSnapshot(task: ServerTask): TaskSnapshot {
-  const statusMap: Record<string, TaskSnapshot['status']> = { QUEUED: 'queued', RUNNING: 'running', COMPLETED: 'completed', FAILED: 'failed', CANCELLED: 'cancelled' }
+  const statusMap: Record<string, TaskSnapshot['status']> = { QUEUED: 'queued', RUNNING: 'running', COMPLETED: 'completed', FAILED: 'failed', CANCELLED: 'cancelled', NEEDS_REVIEW: 'needsReview' }
   const status = statusMap[task.status] ?? 'planning'
-  const laneStatus = status === 'completed' ? (task.report?.failed === 0 ? 'passed' : 'failed') : status === 'failed' || status === 'cancelled' ? 'failed' : status === 'running' ? 'running' : 'pending'
+  const laneStatus = status === 'completed' ? (task.report?.failed === 0 ? 'passed' : 'failed') : status === 'failed' || status === 'cancelled' || status === 'needsReview' ? 'failed' : status === 'running' ? 'running' : 'pending'
   return {
     taskId: task.id,
     status,

@@ -9,3 +9,4 @@ services/control-server/target/
 services/control-server/data/
 .test-agent-service/
 .test-agent-worker/
+.test-agent/

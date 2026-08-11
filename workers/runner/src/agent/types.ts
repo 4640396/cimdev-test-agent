@@ -3,6 +3,7 @@ import type { TaskInput, TestType } from '../../../../contracts/src/contracts.js
 export interface AgentEvent {
   level: 'info' | 'success' | 'warning' | 'error'
   message: string
+  stage?: string
 }
 
 export interface AgentLaneResult {

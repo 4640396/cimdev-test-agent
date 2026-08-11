@@ -119,7 +119,13 @@ class ControlService {
 
     void heartbeatTask(String taskId, String workerId) { store.heartbeatTask(taskId, workerId, leaseSeconds); }
 
-    void workerEvent(String taskId, AgentEvent event) { log(taskId, event.level(), event.message()); }
+    void workerEvent(String taskId, AgentEvent event) {
+        if (event.stage() != null && !event.stage().isBlank()) {
+            store.updateStage(taskId, event.stage());
+            events.publish(taskId, "snapshot", task(taskId));
+        }
+        log(taskId, event.level(), event.message());
+    }
 
     TaskView complete(String taskId, CompleteTaskRequest request) {
         if (store.complete(taskId, request.result())) {

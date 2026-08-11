@@ -50,7 +50,7 @@ class TaskStore {
         if (rows.isEmpty()) return Optional.empty();
         var task = rows.get(0);
         return Optional.of(new TaskView(task.id(), task.projectId(), task.input(), task.status(), task.triggerType(), task.workerId(),
-                task.report(), task.artifacts(), task.errorMessage(), task.createdAt(), task.updatedAt(), logs(id)));
+                task.report(), task.artifacts(), task.errorMessage(), task.createdAt(), task.updatedAt(), logs(id), task.stage()));
     }
 
     List<TaskView> tasks(int limit) {
@@ -69,13 +69,17 @@ class TaskStore {
         return new TaskLog(id == null ? 0 : id, level, message, now.toInstant());
     }
 
+    void updateStage(String taskId, String stage) {
+        jdbc.update("UPDATE test_tasks SET stage=?,updated_at=? WHERE id=?", stage, Timestamp.from(Instant.now()), taskId);
+    }
+
     Optional<ClaimedTask> claim(String workerId, List<String> capabilities, int leaseSeconds) {
         return transactions.execute(status -> {
             for (var id : jdbc.query("SELECT id FROM test_tasks WHERE status='QUEUED' ORDER BY created_at LIMIT 10", (rs, row) -> rs.getString(1))) {
                 var queued = task(id).orElseThrow();
                 var required = queued.input().requiredCapabilities() == null ? List.<String>of() : queued.input().requiredCapabilities();
                 if (!capabilities.containsAll(required)) continue;
-                var updated = jdbc.update("UPDATE test_tasks SET status='RUNNING',worker_id=?,lease_until=?,updated_at=? WHERE id=? AND status='QUEUED'",
+                var updated = jdbc.update("UPDATE test_tasks SET status='RUNNING',worker_id=?,lease_until=?,error_message=NULL,updated_at=? WHERE id=? AND status='QUEUED'",
                         workerId, Timestamp.from(Instant.now().plusSeconds(leaseSeconds)), Timestamp.from(Instant.now()), id);
                 if (updated == 1) {
                     return Optional.of(new ClaimedTask(id, queued.input()));
@@ -93,17 +97,19 @@ class TaskStore {
     boolean complete(String id, JsonNode result) {
         var report = result.path("report");
         var artifacts = result.path("artifacts");
-        return jdbc.update("UPDATE test_tasks SET status='COMPLETED',report_json=?,artifacts_json=?,lease_until=NULL,updated_at=? WHERE id=? AND status='RUNNING'",
-                report.isMissingNode() ? null : report.toString(), artifacts.isMissingNode() ? null : artifacts.toString(), Timestamp.from(Instant.now()), id) == 1;
+        var gatePassed = result.path("gate").path("passed").asBoolean(true);
+        var status = gatePassed ? "COMPLETED" : "NEEDS_REVIEW";
+        return jdbc.update("UPDATE test_tasks SET status=?,stage=?,report_json=?,artifacts_json=?,lease_until=NULL,updated_at=? WHERE id=? AND status='RUNNING'",
+                status, status, report.isMissingNode() ? null : report.toString(), artifacts.isMissingNode() ? null : artifacts.toString(), Timestamp.from(Instant.now()), id) == 1;
     }
 
     void fail(String id, String error) {
-        jdbc.update("UPDATE test_tasks SET status='FAILED',error_message=?,lease_until=NULL,updated_at=? WHERE id=? AND status IN ('RUNNING','QUEUED')",
+        jdbc.update("UPDATE test_tasks SET status='FAILED',stage='FAILED',error_message=?,lease_until=NULL,updated_at=? WHERE id=? AND status IN ('RUNNING','QUEUED')",
                 error, Timestamp.from(Instant.now()), id);
     }
 
     boolean cancel(String id) {
-        return jdbc.update("UPDATE test_tasks SET status='CANCELLED',lease_until=NULL,updated_at=? WHERE id=? AND status IN ('QUEUED','RUNNING')", Timestamp.from(Instant.now()), id) == 1;
+        return jdbc.update("UPDATE test_tasks SET status='CANCELLED',stage='CANCELLED',lease_until=NULL,updated_at=? WHERE id=? AND status IN ('QUEUED','RUNNING')", Timestamp.from(Instant.now()), id) == 1;
     }
 
     void requeueExpired() {
@@ -184,7 +190,7 @@ class TaskStore {
     private TaskView mapTask(ResultSet rs) throws SQLException {
         return new TaskView(rs.getString("id"), rs.getString("project_id"), read(rs.getString("input_json"), TaskInput.class), rs.getString("status"),
                 rs.getString("trigger_type"), rs.getString("worker_id"), tree(rs.getString("report_json")), tree(rs.getString("artifacts_json")),
-                rs.getString("error_message"), rs.getTimestamp("created_at").toInstant(), rs.getTimestamp("updated_at").toInstant(), List.of());
+                rs.getString("error_message"), rs.getTimestamp("created_at").toInstant(), rs.getTimestamp("updated_at").toInstant(), List.of(), rs.getString("stage"));
     }
 
     private String write(Object value) { try { return json.writeValueAsString(value); } catch (JsonProcessingException e) { throw new IllegalArgumentException(e); } }

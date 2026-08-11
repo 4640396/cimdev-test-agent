@@ -1,5 +1,5 @@
 export type TestType = 'unit' | 'regression' | 'ui'
-export type TaskStatus = 'idle' | 'queued' | 'planning' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type TaskStatus = 'idle' | 'queued' | 'planning' | 'running' | 'completed' | 'failed' | 'cancelled' | 'needsReview'
 export type LaneStatus = 'pending' | 'running' | 'passed' | 'failed'
 
 export interface TaskInput {
@@ -8,6 +8,7 @@ export interface TaskInput {
   version: string
   testTypes: TestType[]
   requiredCapabilities?: string[]
+  coverageTarget?: number
 }
 
 export interface ProjectSelection {
@@ -45,6 +46,19 @@ export interface TaskSnapshot {
     passed: number
     failed: number
     coverage: number | null
+    metrics?: {
+      compileRate: number
+      execRate: number
+      assertRate: number
+      effectiveRate: number
+    }
+    gate?: {
+      coverageTarget: number
+      coverage: number | null
+      effectiveRate: number
+      passed: boolean
+      reason: string
+    }
   }
 }
 

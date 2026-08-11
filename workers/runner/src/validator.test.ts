@@ -1,0 +1,74 @@
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { afterAll, describe, expect, it } from 'vitest'
+import { computeMetrics, countAssertionFiles, runNodeUnitTests } from './validator.js'
+
+const projects: string[] = []
+
+function makeProject(files: Record<string, string>): string {
+  const root = join(tmpdir(), `cimdev-validator-${Math.random().toString(36).slice(2)}`)
+  mkdirSync(root, { recursive: true })
+  for (const [relative, content] of Object.entries(files)) {
+    const path = join(root, relative)
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, content, 'utf8')
+  }
+  projects.push(root)
+  return root
+}
+
+afterAll(() => {
+  for (const project of projects) {
+    try {
+      rmSync(project, { recursive: true, force: true })
+    } catch {
+      // 忽略清理失败
+    }
+  }
+})
+
+describe('validator', () => {
+  it('独立重跑 node 测试并解析通过数、失败数与覆盖率', () => {
+    const root = makeProject({
+      'package.json': '{"name":"v","type":"module"}',
+      'src/math.js': 'export const add = (a, b) => a + b\nexport const unused = () => 42\n',
+      'test/math.test.js': "import test from 'node:test'\nimport assert from 'node:assert/strict'\nimport { add } from '../src/math.js'\ntest('add', () => assert.equal(add(1, 2), 3))\n"
+    })
+    const outcome = runNodeUnitTests(root)
+    expect(outcome.ok).toBe(true)
+    expect(outcome.tests).toBeGreaterThanOrEqual(1)
+    expect(outcome.pass).toBeGreaterThanOrEqual(1)
+    expect(outcome.fail).toBe(0)
+    expect(outcome.coverage).not.toBeNull()
+  })
+
+  it('编译错误被识别为 compileError', () => {
+    const root = makeProject({
+      'package.json': '{"name":"v","type":"module"}',
+      'test/bad.test.js': "import test from 'node:test'\ntest('bad', () => { this is not valid js })\n"
+    })
+    const outcome = runNodeUnitTests(root)
+    expect(outcome.compileError).toBe(true)
+  })
+
+  it('四率按执行与断言文件计算', () => {
+    const metrics = computeMetrics({ ok: true, tests: 10, pass: 9, fail: 1, coverage: 80, compileError: false, raw: '' }, { total: 2, withAssertions: 2 })
+    expect(metrics.compileRate).toBe(1)
+    expect(metrics.execRate).toBe(1)
+    expect(metrics.assertRate).toBe(1)
+    expect(metrics.effectiveRate).toBe(1)
+    const metrics2 = computeMetrics({ ok: true, tests: 10, pass: 9, fail: 1, coverage: 80, compileError: false, raw: '' }, { total: 2, withAssertions: 1 })
+    expect(metrics2.effectiveRate).toBe(0.5)
+  })
+
+  it('countAssertionFiles 统计含断言的测试文件', () => {
+    const root = makeProject({
+      'test/with.test.js': "import assert from 'node:assert'\ntest('x', () => assert.equal(1, 1))\n",
+      'test/no.test.js': "import test from 'node:test'\ntest('x', () => {})\n"
+    })
+    const count = countAssertionFiles(root)
+    expect(count.total).toBe(2)
+    expect(count.withAssertions).toBe(1)
+  })
+})
