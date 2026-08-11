@@ -12,4 +12,4 @@ CREATE TABLE audit_log (
   source_ip VARCHAR(64) NULL,
   created_at TIMESTAMP(3) NOT NULL,
   INDEX idx_audit_task (task_id, created_at)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
