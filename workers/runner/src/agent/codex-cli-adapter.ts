@@ -12,8 +12,8 @@ const RESULT_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          type: { enum: ['unit', 'regression', 'ui'] },
-          status: { enum: ['passed', 'failed'] },
+          type: { type: 'string', enum: ['unit', 'regression', 'ui'] },
+          status: { type: 'string', enum: ['passed', 'failed'] },
           summary: { type: 'string' }
         },
         required: ['type', 'status', 'summary'],
@@ -25,7 +25,7 @@ const RESULT_SCHEMA = {
       properties: {
         passed: { type: 'integer', minimum: 0 },
         failed: { type: 'integer', minimum: 0 },
-        coverage: { type: ['number', 'null'], minimum: 0, maximum: 100 }
+        coverage: { anyOf: [{ type: 'number', minimum: 0, maximum: 100 }, { type: 'null' }] }
       },
       required: ['passed', 'failed', 'coverage'],
       additionalProperties: false
