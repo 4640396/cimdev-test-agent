@@ -2,11 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { platform, release } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, join, relative, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
 import { buildKnowledgeContext, collectKnowledgeRefs, resolveKnowledgeRoots } from './knowledge.js'
-import { computeMetrics, countAssertionFiles, resolveBundledPlaywrightCli, runMavenUnitTests, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
+import type { RoutingDecision, TestCase } from './router.js'
+import { decideLayer, routeCases } from './router.js'
+import { computeMetrics, countAssertionFiles, resolveBundledPlaywrightCli, runApiCases, runMavenUnitTests, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
+import type { ApiCaseOutcome } from './validator.js'
 import type { TaskInput } from '../../../contracts/src/contracts.js'
 
 interface ClaimedTask { taskId: string; input: TaskInput }
@@ -143,6 +146,46 @@ async function runTask(task: ClaimedTask): Promise<void> {
     await emitStage(task.taskId, 'GENERATING')
     const result = await adapter.run(task.input, (event) => { void emit(task.taskId, event).catch(console.error) }, controller.signal, { knowledge: buildKnowledgeContext(knowledge) })
     const capabilities = task.input.requiredCapabilities ?? []
+    const rawCases = Array.isArray((result as unknown as { cases?: unknown }).cases) ? (result as unknown as { cases: TestCase[] }).cases : []
+    let casesMeta: { count: number; byLayer: Record<string, number>; byPriority: Record<string, number> } | null = null
+    let routing: RoutingDecision[] = []
+    let apiResult: ApiCaseOutcome | null = null
+    if (rawCases.length > 0) {
+      const casesDir = join(task.input.projectPath, '.test-agent', 'cases')
+      mkdirSync(casesDir, { recursive: true })
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const casesPath = join(casesDir, `cases-${stamp}.json`)
+      writeFileSync(casesPath, JSON.stringify(rawCases, null, 2), 'utf8')
+      routing = routeCases(rawCases, capabilities)
+      writeFileSync(join(casesDir, `routing-${stamp}.json`), JSON.stringify(routing, null, 2), 'utf8')
+      const byLayer: Record<string, number> = {}
+      const byPriority: Record<string, number> = {}
+      for (const caseItem of rawCases) {
+        const layer = decideLayer(caseItem)
+        byLayer[layer] = (byLayer[layer] ?? 0) + 1
+        byPriority[caseItem.priority] = (byPriority[caseItem.priority] ?? 0) + 1
+      }
+      casesMeta = { count: rawCases.length, byLayer, byPriority }
+      const apiCases = routing
+        .filter((item) => item.layer === 'api' && !item.skipped)
+        .map((item) => rawCases.find((caseItem) => caseItem.id === item.caseId))
+        .filter((caseItem): caseItem is TestCase => Boolean(caseItem))
+      if (apiCases.length > 0) {
+        const baseUrl = task.input.apiBaseUrl
+        apiResult = baseUrl
+          ? await runApiCases(apiCases, baseUrl)
+          : { ok: true, pass: 0, fail: 0, skipped: apiCases.length, details: apiCases.map((caseItem) => ({ caseId: caseItem.id, status: 'skipped', reason: '未配置 apiBaseUrl' })) }
+        await emit(task.taskId, {
+          level: apiResult.ok ? 'success' : 'warning',
+          message: `API 用例执行：${apiResult.pass} 通过 / ${apiResult.fail} 失败 / ${apiResult.skipped} 跳过`
+        })
+      }
+      result.artifacts = [...result.artifacts, relative(task.input.projectPath, casesPath), relative(task.input.projectPath, join(casesDir, `routing-${stamp}.json`))]
+      await emit(task.taskId, {
+        level: 'info',
+        message: `用例清单 ${rawCases.length} 条（按层 ${JSON.stringify(byLayer)}，按价值 ${JSON.stringify(byPriority)}），智能分流完成`
+      })
+    }
     const unitOutcome = task.input.testTypes.includes('unit')
       ? capabilities.includes('java')
         ? runMavenUnitTests(task.input.projectPath)
@@ -163,8 +206,8 @@ async function runTask(task: ClaimedTask): Promise<void> {
       const assertions = countAssertionFiles(task.input.projectPath)
       const metrics = computeMetrics(baseOutcome, assertions)
       const knowledgeRate = knowledge.degraded ? 0 : Math.min(1, knowledge.refs.length / Math.max(assertions.total, 1))
-      const totalFail = (unitOutcome?.fail ?? 0) + (uiOutcome?.fail ?? 0) + (regressionOutcome?.fail ?? 0)
-      const totalPass = (unitOutcome?.pass ?? 0) + (uiOutcome?.pass ?? 0) + (regressionOutcome?.pass ?? 0)
+      const totalFail = (unitOutcome?.fail ?? 0) + (uiOutcome?.fail ?? 0) + (regressionOutcome?.fail ?? 0) + (apiResult?.fail ?? 0)
+      const totalPass = (unitOutcome?.pass ?? 0) + (uiOutcome?.pass ?? 0) + (regressionOutcome?.pass ?? 0) + (apiResult?.pass ?? 0)
       const compileError = unitOutcome?.compileError === true || regressionOutcome?.compileError === true
       if (totalFail > 0 || compileError) {
         throw new Error(`独立验证未通过：${totalFail} 个测试失败${compileError ? '，存在编译错误' : ''}`)
@@ -211,7 +254,10 @@ async function runTask(task: ClaimedTask): Promise<void> {
         metrics: { ...metrics, knowledgeRate },
         gate,
         knowledge: knowledgeMeta,
-        lanes
+        lanes,
+        cases: casesMeta,
+        routing,
+        api: apiResult
       }
       await emitStage(task.taskId, 'ANALYZING')
       await emit(task.taskId, {
@@ -221,7 +267,8 @@ async function runTask(task: ClaimedTask): Promise<void> {
       await uploadArtifacts(task, result)
       await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report, lanes, gate } }) }, workerHeaders())
     } else {
-      const report = { ...result.report, knowledge: knowledgeMeta, lanes: result.lanes }
+      if (apiResult && !apiResult.ok) throw new Error(`API 用例执行未通过：${apiResult.fail} 个失败`)
+      const report = { ...result.report, knowledge: knowledgeMeta, lanes: result.lanes, cases: casesMeta, routing, api: apiResult }
       await uploadArtifacts(task, result)
       await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report } }) }, workerHeaders())
     }

@@ -1,8 +1,10 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import type { AddressInfo } from 'node:net'
 import { afterAll, describe, expect, it } from 'vitest'
-import { computeMetrics, countAssertionFiles, parseSurefireSummary, runNodeUnitTests } from './validator.js'
+import { computeMetrics, countAssertionFiles, parseSurefireSummary, runApiCases, runNodeUnitTests } from './validator.js'
 
 const projects: string[] = []
 
@@ -77,5 +79,30 @@ describe('validator', () => {
     const summary = parseSurefireSummary('Tests run: 3, Failures: 1, Errors: 0, Skipped: 1, Time elapsed: 0.5 sec')
     expect(summary).toEqual({ tests: 3, fail: 1 })
     expect(parseSurefireSummary('no summary')).toBeNull()
+  })
+
+  it('runApiCases 按用例执行 HTTP 断言', async () => {
+    const server = createServer((req, res) => {
+      if (req.url === '/hello') {
+        res.writeHead(200, { 'content-type': 'text/plain' })
+        res.end('ok')
+      } else {
+        res.writeHead(404)
+        res.end()
+      }
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as AddressInfo).port
+    try {
+      const outcome = await runApiCases([
+        { id: 'a', title: 't', scenario: 'GET /hello', steps: ['请求 /hello'], expected: '200 成功', priority: 'high', layer: 'api' },
+        { id: 'b', title: 't', scenario: 'GET /missing', steps: ['请求 /missing'], expected: '200 成功', priority: 'medium', layer: 'api' }
+      ], `http://127.0.0.1:${port}`)
+      expect(outcome.pass).toBe(1)
+      expect(outcome.fail).toBe(1)
+      expect(outcome.skipped).toBe(0)
+    } finally {
+      server.close()
+    }
   })
 })

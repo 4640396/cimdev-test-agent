@@ -31,9 +31,27 @@ const RESULT_SCHEMA = {
       required: ['passed', 'failed', 'coverage'],
       additionalProperties: false
     },
-    artifacts: { type: 'array', items: { type: 'string' } }
+    artifacts: { type: 'array', items: { type: 'string' } },
+    cases: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          title: { type: 'string' },
+          scenario: { type: 'string' },
+          steps: { type: 'array', items: { type: 'string' } },
+          expected: { type: 'string' },
+          priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+          layer: { type: 'string', enum: ['api', 'ui', 'unit'] },
+          source: { type: 'string' }
+        },
+        required: ['id', 'title', 'scenario', 'steps', 'expected', 'priority', 'layer', 'source'],
+        additionalProperties: false
+      }
+    }
   },
-  required: ['lanes', 'report', 'artifacts'],
+  required: ['lanes', 'report', 'artifacts', 'cases'],
   additionalProperties: false
 } as const
 
@@ -48,6 +66,8 @@ function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: stri
     '执行要求：',
     '1. 识别项目技术栈、模块、现有测试框架和可用构建命令。',
     '2. 仅为选中的测试类型生成或补强必要测试；尽量不修改生产代码。',
+    '2.1 先生成结构化测试用例清单并放入返回结果的 cases 字段：每例包含 id、title、scenario、steps（数组）、expected、priority(low|medium|high)、layer(api|ui|unit)、source（来源文档或模块）。',
+    '2.2 将用例清单另存为项目内 .test-agent/cases/cases-<时间戳>.json。',
     '3. 必须调用项目真实工具执行测试，例如 go test、Maven、Gradle、npm、Vitest 或 Playwright。',
     '3.1 这是硬性要求：若项目没有任何测试文件，必须创建最小可编译的 JUnit（或对应框架）测试，覆盖至少 1-2 个核心服务或工具类，并真实运行它们；不得以“无测试设施”为由跳过生成。',
     '4. 单元测试必须编译、执行并包含有业务意义的断言；仅判空断言不能视为有效用例。',
@@ -58,6 +78,7 @@ function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: stri
     '9. artifacts 只返回当前项目内确实存在的相对路径。',
     '10. 最终严格按输出 Schema 返回，不要把计划或推测写成测试结果。',
     '11. 测试日志与报告产物必须写入项目目录内（建议 .test-agent/results），禁止写入系统临时目录；越界制品会被丢弃。',
+    '13. 禁止递归扫描 node_modules、.git、dist、target、.test-agent 等大目录；需要了解结构时使用定向查询（如 Get-ChildItem 指定目录或读关键文件）。',
     ...(input.targetClasses && input.targetClasses.length > 0
       ? [`12. 本次必须为以下核心类生成单元测试：${input.targetClasses.join('、')}。为每个类至少生成一个可编译、可运行的 JUnit 测试，不得以“无测试设施”为由跳过。`]
       : [])

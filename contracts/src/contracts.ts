@@ -11,6 +11,7 @@ export interface TaskInput {
   coverageTarget?: number
   knowledgeRoots?: string[]
   targetClasses?: string[]
+  apiBaseUrl?: string
 }
 
 export interface ProjectSelection {

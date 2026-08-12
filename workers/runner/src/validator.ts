@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import type { TestCase } from './router.js'
 
 export interface NodeTestOutcome {
   ok: boolean
@@ -107,6 +108,61 @@ export function runMavenUnitTests(projectPath: string): MavenTestOutcome {
   }
   const compileError = result.status !== 0 && /BUILD FAILURE/.test(raw)
   return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError, raw }
+}
+
+export interface ApiCaseOutcome {
+  ok: boolean
+  pass: number
+  fail: number
+  skipped: number
+  details: Array<{ caseId: string; status: string; reason?: string }>
+}
+
+function findApiTarget(caseItem: TestCase): string | null {
+  const candidates = [caseItem.scenario, ...caseItem.steps].join('\n')
+  const match = candidates.match(/["']?(\/[a-zA-Z0-9_\-/{}]+)["']?/)
+  return match ? match[1] : null
+}
+
+function assertExpected(status: number, expected: string): boolean {
+  const text = expected.toLowerCase()
+  if (text.includes('404')) return status === 404
+  if (text.includes('401')) return status === 401
+  if (text.includes('400')) return status === 400
+  if (text.includes('200') || text.includes('成功') || text.includes('通过')) return status >= 200 && status < 300
+  return status >= 200 && status < 300
+}
+
+/** 基础 API 执行器：从用例提取接口路径，发起 HTTP 请求并按 expected 断言。 */
+export async function runApiCases(cases: TestCase[], baseUrl: string): Promise<ApiCaseOutcome> {
+  let pass = 0
+  let fail = 0
+  let skipped = 0
+  const details: ApiCaseOutcome['details'] = []
+  const root = baseUrl.replace(/\/$/, '')
+  for (const caseItem of cases) {
+    const target = findApiTarget(caseItem)
+    if (!target) {
+      skipped += 1
+      details.push({ caseId: caseItem.id, status: 'skipped', reason: '未从用例提取到接口路径' })
+      continue
+    }
+    try {
+      const response = await fetch(`${root}${target}`, { signal: AbortSignal.timeout(10_000) })
+      await response.text()
+      if (assertExpected(response.status, caseItem.expected)) {
+        pass += 1
+        details.push({ caseId: caseItem.id, status: 'passed' })
+      } else {
+        fail += 1
+        details.push({ caseId: caseItem.id, status: 'failed', reason: `expected=${caseItem.expected} got=${response.status}` })
+      }
+    } catch (error) {
+      fail += 1
+      details.push({ caseId: caseItem.id, status: 'failed', reason: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  return { ok: fail === 0, pass, fail, skipped, details }
 }
 
 /** 解析 Test Agent 内置的 Playwright CLI 路径（Worker 预置能力，被测项目无需安装）。 */

@@ -11,9 +11,12 @@ import java.util.List;
 final class ApiModels {
     private ApiModels() {}
 
-    record TaskInput(@NotBlank String projectPath, @NotBlank String systemName, String version, @NotEmpty List<String> testTypes, List<String> requiredCapabilities, Integer coverageTarget, List<String> knowledgeRoots, List<String> targetClasses) {
+    record TaskInput(@NotBlank String projectPath, @NotBlank String systemName, String version, @NotEmpty List<String> testTypes, List<String> requiredCapabilities, Integer coverageTarget, List<String> knowledgeRoots, List<String> targetClasses, String apiBaseUrl) {
+        TaskInput(String projectPath, String systemName, String version, List<String> testTypes, List<String> requiredCapabilities, Integer coverageTarget, List<String> knowledgeRoots, List<String> targetClasses) {
+            this(projectPath, systemName, version, testTypes, requiredCapabilities, coverageTarget, knowledgeRoots, targetClasses, null);
+        }
         TaskInput(String projectPath, String systemName, String version, List<String> testTypes, List<String> requiredCapabilities, Integer coverageTarget, List<String> knowledgeRoots) {
-            this(projectPath, systemName, version, testTypes, requiredCapabilities, coverageTarget, knowledgeRoots, null);
+            this(projectPath, systemName, version, testTypes, requiredCapabilities, coverageTarget, knowledgeRoots, null, null);
         }
         TaskInput(String projectPath, String systemName, String version, List<String> testTypes, List<String> requiredCapabilities, Integer coverageTarget) {
             this(projectPath, systemName, version, testTypes, requiredCapabilities, coverageTarget, null, null);
