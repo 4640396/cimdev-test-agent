@@ -179,6 +179,19 @@ class TaskStore {
                 actor, action, taskId, payload, sourceIp, Timestamp.from(Instant.now()));
     }
 
+    List<AuditEntry> listAudit(int limit, String actor, String action) {
+        var sql = new StringBuilder("SELECT id, actor, action, task_id, payload, source_ip, created_at FROM audit_log");
+        var conditions = new java.util.ArrayList<String>();
+        var params = new java.util.ArrayList<Object>();
+        if (actor != null && !actor.isBlank()) { conditions.add("actor=?"); params.add(actor); }
+        if (action != null && !action.isBlank()) { conditions.add("action=?"); params.add(action); }
+        if (!conditions.isEmpty()) sql.append(" WHERE ").append(String.join(" AND ", conditions));
+        sql.append(" ORDER BY id DESC LIMIT ?");
+        params.add(limit);
+        return jdbc.query(sql.toString(), (rs, row) -> new AuditEntry(rs.getLong("id"), rs.getString("actor"), rs.getString("action"),
+                rs.getString("task_id"), rs.getString("payload"), rs.getString("source_ip"), rs.getTimestamp("created_at").toInstant()), params.toArray());
+    }
+
     List<java.util.Map<String, Object>> artifacts(String taskId) {
         return jdbc.queryForList("SELECT id,original_name,content_type,size_bytes,created_at FROM task_artifacts WHERE task_id=? ORDER BY created_at", taskId);
     }

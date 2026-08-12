@@ -75,6 +75,7 @@ class ControlService {
     TaskView task(String id) { return store.task(id).orElseThrow(() -> new IllegalArgumentException("任务不存在")); }
     List<TaskView> tasks(int limit) { return store.tasks(Math.min(Math.max(limit, 1), 1000)); }
     List<TaskLog> logs(String id) { return store.logs(id); }
+    List<AuditEntry> audit(int limit, String actor, String action) { return store.listAudit(Math.min(Math.max(limit, 1), 500), actor, action); }
 
     TaskView cancel(String id) {
         if (store.cancel(id)) {

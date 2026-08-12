@@ -37,8 +37,8 @@ const RESULT_SCHEMA = {
   additionalProperties: false
 } as const
 
-function buildPrompt(input: TaskInput, outputDirectory: string): string {
-  return [
+function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: string): string {
+  const base = [
     '你是 CIMDEV Test Agent 的测试执行代理。必须在当前项目内完成真实测试，不得虚构结果。',
     `系统：${input.systemName}`,
     `版本：${input.version || '未识别'}`,
@@ -57,6 +57,7 @@ function buildPrompt(input: TaskInput, outputDirectory: string): string {
     '9. artifacts 只返回当前项目内确实存在的相对路径。',
     '10. 最终严格按输出 Schema 返回，不要把计划或推测写成测试结果。'
   ].join('\n')
+  return knowledge ? `${base}\n\n## 业务知识参考（仅作带来源的上下文，冲突转人工确认）\n${knowledge}` : base
 }
 
 function messageFromEvent(value: unknown): AgentEvent | null {
@@ -164,7 +165,7 @@ export class CodexCliAdapter implements AgentAdapter {
 
   constructor(private readonly executable: string) {}
 
-  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<AgentRunResult> {
+  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal, context?: { knowledge?: string }): Promise<AgentRunResult> {
     return new Promise((resolveRun, reject) => {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const outputDirectory = join(input.projectPath, '.test-agent', 'results', stamp)
@@ -179,7 +180,7 @@ export class CodexCliAdapter implements AgentAdapter {
         '--sandbox', 'workspace-write',
         '--output-schema', schemaPath,
         '--output-last-message', resultPath,
-        buildPrompt(input, relative(input.projectPath, outputDirectory))
+        buildPrompt(input, relative(input.projectPath, outputDirectory), context?.knowledge)
       ]
       const command = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : this.executable
       const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', this.executable, ...args] : args

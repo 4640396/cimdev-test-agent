@@ -5,6 +5,7 @@ import { platform, release } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
+import { buildKnowledgeContext, collectKnowledgeRefs, resolveKnowledgeRoots } from './knowledge.js'
 import { computeMetrics, countAssertionFiles, runNodeUnitTests } from './validator.js'
 import type { TaskInput } from '../../../contracts/src/contracts.js'
 
@@ -118,6 +119,19 @@ async function runTask(task: ClaimedTask): Promise<void> {
     throw new Error(message)
   }
   await emit(task.taskId, { level: 'info', message: `环境预检通过：${preflight.summary}` })
+  await emitStage(task.taskId, 'PLANNING')
+  const knowledge = collectKnowledgeRefs(resolveKnowledgeRoots(task.input, task.input.projectPath), task.input.systemName)
+  const knowledgeMeta = {
+    refs: knowledge.refs.map((ref) => ({ source: ref.source, version: ref.version, type: ref.type })),
+    degraded: knowledge.degraded,
+    reason: knowledge.reason
+  }
+  await emit(task.taskId, {
+    level: knowledge.degraded ? 'warning' : 'success',
+    message: knowledge.degraded
+      ? `知识库降级：${knowledge.reason}`
+      : `知识库命中 ${knowledge.refs.length} 条：${knowledge.refs.map((ref) => ref.source).join(', ')}`
+  })
   const controller = new AbortController()
   const heartbeat = setInterval(() => {
     void request(`/api/worker/tasks/${task.taskId}/heartbeat?workerId=${encodeURIComponent(workerId)}`, { method: 'POST' }, workerHeaders()).catch(console.error)
@@ -126,12 +140,13 @@ async function runTask(task: ClaimedTask): Promise<void> {
   try {
     await emit(task.taskId, { level: 'info', message: `Worker使用 ${adapter.name} 执行真实测试` })
     await emitStage(task.taskId, 'GENERATING')
-    const result = await adapter.run(task.input, (event) => { void emit(task.taskId, event).catch(console.error) }, controller.signal)
+    const result = await adapter.run(task.input, (event) => { void emit(task.taskId, event).catch(console.error) }, controller.signal, { knowledge: buildKnowledgeContext(knowledge) })
     if (task.input.testTypes.includes('unit') && (task.input.requiredCapabilities ?? []).includes('node')) {
       await emitStage(task.taskId, 'VALIDATING')
       const outcome = runNodeUnitTests(task.input.projectPath)
       const assertions = countAssertionFiles(task.input.projectPath)
       const metrics = computeMetrics(outcome, assertions)
+      const knowledgeRate = knowledge.degraded ? 0 : Math.min(1, knowledge.refs.length / Math.max(assertions.total, 1))
       if (outcome.fail > 0 || outcome.compileError) {
         throw new Error(`独立验证未通过：${outcome.fail} 个测试失败${outcome.compileError ? '，存在编译错误' : ''}`)
       }
@@ -158,8 +173,9 @@ async function runTask(task: ClaimedTask): Promise<void> {
         passed: outcome.pass,
         failed: outcome.fail,
         coverage: outcome.coverage,
-        metrics,
-        gate
+        metrics: { ...metrics, knowledgeRate },
+        gate,
+        knowledge: knowledgeMeta
       }
       await emitStage(task.taskId, 'ANALYZING')
       await emit(task.taskId, {
@@ -169,8 +185,9 @@ async function runTask(task: ClaimedTask): Promise<void> {
       await uploadArtifacts(task, result)
       await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report, lanes, gate } }) }, workerHeaders())
     } else {
+      const report = { ...result.report, knowledge: knowledgeMeta }
       await uploadArtifacts(task, result)
-      await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result }) }, workerHeaders())
+      await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report } }) }, workerHeaders())
     }
   } catch (error) {
     if (!controller.signal.aborted) {

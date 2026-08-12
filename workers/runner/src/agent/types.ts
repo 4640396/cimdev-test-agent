@@ -20,5 +20,5 @@ export interface AgentRunResult {
 
 export interface AgentAdapter {
   readonly name: string
-  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<AgentRunResult>
+  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal, context?: { knowledge?: string }): Promise<AgentRunResult>
 }

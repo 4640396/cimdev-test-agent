@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import { join } from 'node:path'
 import { basename } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -9,6 +9,7 @@ let mainWindow: BrowserWindow | null = null
 const execFileAsync = promisify(execFile)
 const serverUrl = (process.env.TEST_AGENT_SERVER_URL ?? 'http://127.0.0.1:8088').replace(/\/$/, '')
 const taskWatchers = new Map<string, NodeJS.Timeout>()
+let knowledgeRoots: string[] = []
 
 interface ServerTask {
   id: string
@@ -95,7 +96,30 @@ function createWindow(): void {
   else mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
+function buildMenu(): void {
+  const menu = Menu.buildFromTemplate([
+    {
+      label: '配置',
+      submenu: [
+        {
+          label: '知识库目录…',
+          click: async () => {
+            if (!mainWindow) return
+            const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'multiSelections'], title: '选择知识库目录（可多选）' })
+            if (result.canceled) return
+            knowledgeRoots = result.filePaths
+            mainWindow.webContents.send('config:changed', knowledgeRoots)
+          }
+        }
+      ]
+    }
+  ])
+  Menu.setApplicationMenu(menu)
+}
+
 app.whenReady().then(() => {
+  buildMenu()
+  ipcMain.handle('config:getKnowledgeRoots', () => knowledgeRoots)
   ipcMain.handle('project:select', async () => {
     if (!mainWindow) return null
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
@@ -127,7 +151,8 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('task:start', async (_event, input: TaskInput) => {
-    const task = await serverRequest<ServerTask>('/api/tasks', { method: 'POST', body: JSON.stringify({ input, triggerType: 'desktop' }) })
+    const mergedInput = knowledgeRoots.length > 0 ? { ...input, knowledgeRoots } : input
+    const task = await serverRequest<ServerTask>('/api/tasks', { method: 'POST', body: JSON.stringify({ input: mergedInput, triggerType: 'desktop' }) })
     watchTask(task.id)
     return { taskId: task.id }
   })

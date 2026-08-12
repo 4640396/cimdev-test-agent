@@ -13,7 +13,9 @@ const snapshot = ref<TaskSnapshot | null>(null)
 const error = ref('')
 const starting = ref(false)
 const runtime = ref<RuntimeStatus>({ mode: 'unavailable', provider: null, message: '正在读取运行模式' })
+const knowledgeRoots = ref<string[]>([])
 let unsubscribe: (() => void) | undefined
+let unsubscribeRoots: (() => void) | undefined
 
 const lanes = computed(() => snapshot.value?.lanes ?? emptyLanes(form.testTypes))
 const progress = computed(() => progressOf(snapshot.value))
@@ -43,7 +45,11 @@ async function startTask(): Promise<void> {
   error.value = ''
   starting.value = true
   try {
-    await window.testAgent.startTask({ ...form, testTypes: [...form.testTypes] })
+    await window.testAgent.startTask({
+      ...form,
+      testTypes: [...form.testTypes],
+      knowledgeRoots: knowledgeRoots.value.length > 0 ? [...knowledgeRoots.value] : undefined
+    })
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '任务启动失败'
   } finally {
@@ -58,9 +64,11 @@ async function cancelTask(): Promise<void> {
 
 onMounted(() => {
   void window.testAgent.getRuntimeStatus().then((status) => (runtime.value = status))
+  void window.testAgent.getKnowledgeRoots().then((roots) => (knowledgeRoots.value = roots))
+  unsubscribeRoots = window.testAgent.onKnowledgeRootsChanged((roots) => (knowledgeRoots.value = roots))
   unsubscribe = window.testAgent.subscribeTask((next) => (snapshot.value = next))
 })
-onBeforeUnmount(() => unsubscribe?.())
+onBeforeUnmount(() => { unsubscribe?.(); unsubscribeRoots?.() })
 </script>
 
 <template>
@@ -86,6 +94,11 @@ onBeforeUnmount(() => unsubscribe?.())
         </div>
         <div class="checks">
           <button v-for="type in (['unit','regression','ui'] as TestType[])" :key="type" :class="{ selected: form.testTypes.includes(type) }" @click="toggleType(type)">{{ laneLabels[type] }}</button>
+        </div>
+        <label>知识库目录</label>
+        <div class="knowledge-picker">
+          <span class="knowledge-roots">{{ knowledgeRoots.length ? knowledgeRoots.join('; ') : '未配置（默认取 项目/knowledge）' }}</span>
+          <span class="hint">左上角菜单「配置 → 知识库目录」可设置</span>
         </div>
         <p v-if="error" class="error">{{ error }}</p>
       </article>

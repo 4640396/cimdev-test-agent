@@ -48,6 +48,11 @@ class ApiController {
     }
 
     @GetMapping("/workers") List<WorkerView> workers() { return service.workers(); }
+    @GetMapping("/audit") List<AuditEntry> audit(@RequestParam(defaultValue = "100") int limit,
+                                                @RequestParam(required = false) String actor,
+                                                @RequestParam(required = false) String action) {
+        return service.audit(limit, actor, action);
+    }
     @PostMapping("/workers/register") WorkerRegisterResponse register(@Valid @RequestBody WorkerRegisterRequest request) { return service.register(request); }
     @PostMapping("/workers/{id}/heartbeat")
     ResponseEntity<?> heartbeat(@PathVariable String id,

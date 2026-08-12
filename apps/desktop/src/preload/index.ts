@@ -3,6 +3,12 @@ import type { DesktopApi, TaskInput, TaskSnapshot } from '../../../../contracts/
 
 const api: DesktopApi = {
   selectProject: () => ipcRenderer.invoke('project:select'),
+  getKnowledgeRoots: () => ipcRenderer.invoke('config:getKnowledgeRoots'),
+  onKnowledgeRootsChanged: (listener: (roots: string[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, roots: string[]) => listener(roots)
+    ipcRenderer.on('config:changed', handler)
+    return () => ipcRenderer.removeListener('config:changed', handler)
+  },
   getRuntimeStatus: () => ipcRenderer.invoke('runtime:status'),
   startTask: (input: TaskInput) => ipcRenderer.invoke('task:start', input),
   getTask: (taskId: string) => ipcRenderer.invoke('task:get', taskId),

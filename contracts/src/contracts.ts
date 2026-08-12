@@ -9,6 +9,7 @@ export interface TaskInput {
   testTypes: TestType[]
   requiredCapabilities?: string[]
   coverageTarget?: number
+  knowledgeRoots?: string[]
 }
 
 export interface ProjectSelection {
@@ -51,6 +52,7 @@ export interface TaskSnapshot {
       execRate: number
       assertRate: number
       effectiveRate: number
+      knowledgeRate?: number
     }
     gate?: {
       coverageTarget: number
@@ -58,6 +60,15 @@ export interface TaskSnapshot {
       effectiveRate: number
       passed: boolean
       reason: string
+    }
+    knowledge?: {
+      refs: Array<{
+        source: string
+        version: string | null
+        type: string
+      }>
+      degraded: boolean
+      reason?: string
     }
   }
 }
@@ -84,6 +95,8 @@ export interface ScheduleRecord {
 
 export interface DesktopApi {
   selectProject(): Promise<ProjectSelection | null>
+  getKnowledgeRoots(): Promise<string[]>
+  onKnowledgeRootsChanged(listener: (roots: string[]) => void): () => void
   getRuntimeStatus(): Promise<RuntimeStatus>
   startTask(input: TaskInput): Promise<{ taskId: string }>
   getTask(taskId: string): Promise<TaskSnapshot | null>

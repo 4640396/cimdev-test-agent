@@ -51,7 +51,7 @@ function findGo(projectPath: string): string | null {
 export class LocalGoAdapter implements AgentAdapter {
   readonly name = 'Local Go Runner'
 
-  async run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<AgentRunResult> {
+  async run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal, _context?: { knowledge?: string }): Promise<AgentRunResult> {
     if (input.testTypes.length !== 1 || input.testTypes[0] !== 'unit') {
       throw new Error('本地 Go Runner 当前仅支持单元测试，请只选择“单元测试”')
     }

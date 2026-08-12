@@ -9,7 +9,7 @@ export class ProcessCimiCodeAdapter implements AgentAdapter {
     private readonly baseArgs: string[] = []
   ) {}
 
-  run(input: TaskInput, emit: (event: AgentEvent) => void): Promise<AgentRunResult> {
+  run(input: TaskInput, emit: (event: AgentEvent) => void, _signal?: AbortSignal, _context?: { knowledge?: string }): Promise<AgentRunResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(this.executable, this.baseArgs, {
         cwd: input.projectPath,

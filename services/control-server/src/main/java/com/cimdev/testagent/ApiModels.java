@@ -11,15 +11,19 @@ import java.util.List;
 final class ApiModels {
     private ApiModels() {}
 
-    record TaskInput(@NotBlank String projectPath, @NotBlank String systemName, String version, @NotEmpty List<String> testTypes, List<String> requiredCapabilities, Integer coverageTarget) {
+    record TaskInput(@NotBlank String projectPath, @NotBlank String systemName, String version, @NotEmpty List<String> testTypes, List<String> requiredCapabilities, Integer coverageTarget, List<String> knowledgeRoots) {
+        TaskInput(String projectPath, String systemName, String version, List<String> testTypes, List<String> requiredCapabilities, Integer coverageTarget) {
+            this(projectPath, systemName, version, testTypes, requiredCapabilities, coverageTarget, null);
+        }
         TaskInput(String projectPath, String systemName, String version, List<String> testTypes, List<String> requiredCapabilities) {
-            this(projectPath, systemName, version, testTypes, requiredCapabilities, null);
+            this(projectPath, systemName, version, testTypes, requiredCapabilities, null, null);
         }
     }
     record CreateTaskRequest(String projectId, TaskInput input, String triggerType, String idempotencyKey) {
         CreateTaskRequest(String projectId, TaskInput input, String triggerType) { this(projectId, input, triggerType, null); }
     }
     record TaskLog(long id, String level, String message, Instant createdAt) {}
+    record AuditEntry(long id, String actor, String action, String taskId, String payload, String sourceIp, Instant createdAt) {}
     record TaskView(String id, String projectId, TaskInput input, String status, String triggerType, String workerId,
                     JsonNode report, JsonNode artifacts, String errorMessage, Instant createdAt, Instant updatedAt, List<TaskLog> logs, String stage) {}
     record ProjectRequest(String id, @NotBlank String name, @NotBlank String projectPath, String defaultVersion, @NotEmpty List<String> defaultTestTypes) {}

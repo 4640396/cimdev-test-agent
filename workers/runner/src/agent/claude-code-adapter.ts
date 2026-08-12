@@ -37,8 +37,8 @@ const RESULT_SCHEMA = JSON.stringify({
   additionalProperties: false
 })
 
-function promptFor(input: TaskInput): string {
-  return [
+function promptFor(input: TaskInput, knowledge?: string): string {
+  const base = [
     '你是 CIMDEV Test Agent 的真实执行器。请直接在当前项目中工作，不得伪造任何测试结果。',
     `系统：${input.systemName}`,
     `版本：${input.version || '未识别'}`,
@@ -53,6 +53,7 @@ function promptFor(input: TaskInput): string {
     '6. artifacts 只返回确实存在的相对路径。',
     '7. 最终严格按照 JSON Schema 返回结构化结果。'
   ].join('\n')
+  return knowledge ? `${base}\n\n业务知识参考（仅作带来源的上下文，冲突转人工确认）：\n${knowledge}` : base
 }
 
 function parseResult(stdout: string): AgentRunResult {
@@ -75,7 +76,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   constructor(private readonly executable: string) {}
 
-  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<AgentRunResult> {
+  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal, context?: { knowledge?: string }): Promise<AgentRunResult> {
     return new Promise((resolve, reject) => {
       const pathParts = [
         join(input.projectPath, '.preview-toolchain', 'go', 'bin'),
@@ -83,7 +84,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         process.env.PATH ?? ''
       ].filter((path, index) => index === 2 || existsSync(path))
       const args = [
-        '-p', promptFor(input),
+        '-p', promptFor(input, context?.knowledge),
         '--output-format', 'json',
         '--json-schema', RESULT_SCHEMA,
         '--permission-mode', 'acceptEdits',

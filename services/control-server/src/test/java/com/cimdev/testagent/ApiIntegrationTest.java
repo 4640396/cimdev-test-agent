@@ -97,6 +97,20 @@ class ApiIntegrationTest {
     }
 
     @Test
+    void auditQueryReturnsEntries() throws Exception {
+        var projectId = createProject("audit");
+        mvc.perform(post("/api/tasks").headers(auth()).contentType(MediaType.APPLICATION_JSON).content("""
+                {"projectId":"%s","triggerType":"test"}
+                """.formatted(projectId))).andExpect(status().isAccepted());
+
+        mvc.perform(get("/api/audit").headers(auth()).param("action", "task.create").param("limit", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].action").value("task.create"))
+                .andExpect(jsonPath("$[0].actor").value("api"));
+    }
+
+    @Test
     void apiRequiresTokenByDefault() throws Exception {
         mvc.perform(get("/api/projects")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/projects").headers(auth())).andExpect(status().isOk());
