@@ -37,6 +37,14 @@ class ApiController {
     @GetMapping("/tasks") List<TaskView> tasks(@RequestParam(defaultValue = "100") int limit) { return service.tasks(limit); }
     @PostMapping("/tasks") ResponseEntity<TaskView> createTask(@Valid @RequestBody CreateTaskRequest request) { return ResponseEntity.accepted().body(service.createTask(request)); }
     @GetMapping("/tasks/{id}") TaskView task(@PathVariable String id) { return service.task(id); }
+    @GetMapping(value = "/tasks/{id}/report", produces = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<String> report(@PathVariable String id, @RequestParam(defaultValue = "json") String format) {
+        var task = service.task(id);
+        if ("junit".equalsIgnoreCase(format)) {
+            return ResponseEntity.ok().contentType(MediaType.APPLICATION_XML).body(service.junitReport(task));
+        }
+        return ResponseEntity.ok(service.jsonReport(task));
+    }
     @GetMapping("/tasks/{id}/logs") List<TaskLog> logs(@PathVariable String id) { return service.logs(id); }
     @PostMapping("/tasks/{id}/cancel") TaskView cancel(@PathVariable String id) { return service.cancel(id); }
     @PostMapping("/tasks/{id}/retry") ResponseEntity<TaskView> retry(@PathVariable String id) { return ResponseEntity.accepted().body(service.retry(id)); }

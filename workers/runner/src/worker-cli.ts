@@ -153,15 +153,19 @@ async function runTask(task: ClaimedTask): Promise<void> {
     const uiOutcome = task.input.testTypes.includes('ui') && capabilities.includes('playwright')
       ? runPlaywrightUiTests(task.input.projectPath)
       : null
-    if (unitOutcome || uiOutcome) {
+    const regressionTool = capabilities.includes('java') ? 'java' : capabilities.includes('node') ? 'node' : null
+    const regressionOutcome = task.input.testTypes.includes('regression') && regressionTool
+      ? (unitOutcome ?? (regressionTool === 'java' ? runMavenUnitTests(task.input.projectPath) : runNodeUnitTests(task.input.projectPath)))
+      : null
+    if (unitOutcome || uiOutcome || regressionOutcome) {
       await emitStage(task.taskId, 'VALIDATING')
       const baseOutcome = (unitOutcome ?? uiOutcome)!
       const assertions = countAssertionFiles(task.input.projectPath)
       const metrics = computeMetrics(baseOutcome, assertions)
       const knowledgeRate = knowledge.degraded ? 0 : Math.min(1, knowledge.refs.length / Math.max(assertions.total, 1))
-      const totalFail = (unitOutcome?.fail ?? 0) + (uiOutcome?.fail ?? 0)
-      const totalPass = (unitOutcome?.pass ?? 0) + (uiOutcome?.pass ?? 0)
-      const compileError = unitOutcome?.compileError === true
+      const totalFail = (unitOutcome?.fail ?? 0) + (uiOutcome?.fail ?? 0) + (regressionOutcome?.fail ?? 0)
+      const totalPass = (unitOutcome?.pass ?? 0) + (uiOutcome?.pass ?? 0) + (regressionOutcome?.pass ?? 0)
+      const compileError = unitOutcome?.compileError === true || regressionOutcome?.compileError === true
       if (totalFail > 0 || compileError) {
         throw new Error(`独立验证未通过：${totalFail} 个测试失败${compileError ? '，存在编译错误' : ''}`)
       }
@@ -177,6 +181,9 @@ async function runTask(task: ClaimedTask): Promise<void> {
         }
         if (lane.type === 'ui' && uiOutcome) {
           return { ...lane, summary: `${lane.summary}（Playwright 独立验证 ${uiOutcome.pass} 通过 / ${uiOutcome.fail} 失败）` }
+        }
+        if (lane.type === 'regression' && regressionOutcome) {
+          return { ...lane, summary: `${lane.summary}（回归独立验证：全量套件 ${regressionOutcome.pass} 通过 / ${regressionOutcome.fail} 失败）` }
         }
         return lane
       })
@@ -203,7 +210,8 @@ async function runTask(task: ClaimedTask): Promise<void> {
         coverage,
         metrics: { ...metrics, knowledgeRate },
         gate,
-        knowledge: knowledgeMeta
+        knowledge: knowledgeMeta,
+        lanes
       }
       await emitStage(task.taskId, 'ANALYZING')
       await emit(task.taskId, {
@@ -213,7 +221,7 @@ async function runTask(task: ClaimedTask): Promise<void> {
       await uploadArtifacts(task, result)
       await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report, lanes, gate } }) }, workerHeaders())
     } else {
-      const report = { ...result.report, knowledge: knowledgeMeta }
+      const report = { ...result.report, knowledge: knowledgeMeta, lanes: result.lanes }
       await uploadArtifacts(task, result)
       await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report } }) }, workerHeaders())
     }

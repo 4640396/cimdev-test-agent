@@ -65,11 +65,12 @@ describe('validator', () => {
   it('countAssertionFiles 统计含断言的测试文件', () => {
     const root = makeProject({
       'test/with.test.js': "import assert from 'node:assert'\ntest('x', () => assert.equal(1, 1))\n",
-      'test/no.test.js': "import test from 'node:test'\ntest('x', () => {})\n"
+      'test/no.test.js': "import test from 'node:test'\ntest('x', () => {})\n",
+      'e2e/smoke.spec.js': "import { test, expect } from '@playwright/test'\ntest('loads', async ({ page }) => { await expect(page).toBeTruthy() })\n"
     })
     const count = countAssertionFiles(root)
-    expect(count.total).toBe(2)
-    expect(count.withAssertions).toBe(1)
+    expect(count.total).toBe(3)
+    expect(count.withAssertions).toBe(2)
   })
 
   it('解析 surefire 汇总行', () => {

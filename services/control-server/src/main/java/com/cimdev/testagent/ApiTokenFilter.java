@@ -25,7 +25,8 @@ class ApiTokenFilter extends OncePerRequestFilter {
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws ServletException, IOException {
-        if (request.getRequestURI().equals("/actuator/health")) {
+        var uri = request.getRequestURI();
+        if (uri.equals("/actuator/health") || uri.startsWith("/v3/api-docs") || uri.startsWith("/swagger-ui") || uri.equals("/swagger-ui.html")) {
             chain.doFilter(request, response);
             return;
         }

@@ -171,6 +171,42 @@ class ApiIntegrationTest {
         assertThat(auditCount("task.create.duplicate")).isGreaterThanOrEqualTo(2);
     }
 
+    @Test
+    void reportExportSupportsJsonAndJunit() throws Exception {
+        var projectId = createProject("report");
+        var workerSecret = registerWorker("worker-1", new String[]{"windows", "java"});
+        var task = mvc.perform(post("/api/tasks").headers(auth()).contentType(MediaType.APPLICATION_JSON).content("""
+                {"projectId":"%s","triggerType":"test"}
+                """.formatted(projectId))).andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString();
+        var taskId = JSON.readTree(task).path("id").asText();
+
+        mvc.perform(post("/api/worker/tasks/claim").headers(auth()).headers(worker("worker-1", workerSecret))
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"workerId":"worker-1","capabilities":["windows","java"]}
+                """)).andExpect(status().isOk());
+
+        mvc.perform(post("/api/worker/tasks/{id}/complete", taskId).headers(auth()).headers(worker("worker-1", workerSecret))
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"result":{"lanes":[{"type":"unit","status":"passed","summary":"ok"}],"report":{"passed":2,"failed":0,"coverage":80},"artifacts":[]}}
+                """)).andExpect(status().isOk());
+
+        mvc.perform(get("/api/tasks/{id}/report", taskId).headers(auth()).param("format", "json"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId").value(taskId))
+                .andExpect(jsonPath("$.report.passed").value(2));
+
+        mvc.perform(get("/api/tasks/{id}/report", taskId).headers(auth()).param("format", "junit"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("<testsuite")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("tests=\"2\"")));
+    }
+
+    @Test
+    void openApiDocsAvailable() throws Exception {
+        mvc.perform(get("/v3/api-docs")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.info.title").value("CIMDEV Test Agent API"));
+    }
+
     private String createProject(String name) throws Exception {
         var response = mvc.perform(post("/api/projects").headers(auth()).contentType(MediaType.APPLICATION_JSON).content("""
                 {"name":"%s","projectPath":"C:/works/%s","defaultVersion":"main","defaultTestTypes":["unit"]}

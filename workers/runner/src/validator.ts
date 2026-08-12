@@ -200,7 +200,7 @@ export function countAssertionFiles(projectPath: string): AssertionCount {
       }
       if (stat.isDirectory()) {
         if (!SKIP_DIRS.has(basename(full))) collect(full, depth + 1)
-      } else if (/\.(test\.(js|mjs|cjs|ts)|Test\.java)$/.test(entry)) {
+      } else if (/\.(test\.(js|mjs|cjs|ts)|Test\.java|spec\.(js|mjs|cjs|ts))$/.test(entry)) {
         files.push(full)
       }
     }

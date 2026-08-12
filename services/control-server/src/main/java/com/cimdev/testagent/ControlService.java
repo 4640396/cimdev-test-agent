@@ -30,14 +30,17 @@ class ControlService {
     private final SseHub events;
     private final Path storageRoot;
     private final int leaseSeconds;
+    private final com.fasterxml.jackson.databind.ObjectMapper json;
 
     ControlService(TaskStore store, SseHub events,
                    @Value("${test-agent.storage-root}") String storageRoot,
-                   @Value("${test-agent.task-lease-seconds}") int leaseSeconds) throws IOException {
+                   @Value("${test-agent.task-lease-seconds}") int leaseSeconds,
+                   com.fasterxml.jackson.databind.ObjectMapper json) throws IOException {
         this.store = store;
         this.events = events;
         this.storageRoot = Path.of(storageRoot).toAbsolutePath().normalize();
         this.leaseSeconds = leaseSeconds;
+        this.json = json;
         Files.createDirectories(this.storageRoot);
     }
 
@@ -76,6 +79,52 @@ class ControlService {
     List<TaskView> tasks(int limit) { return store.tasks(Math.min(Math.max(limit, 1), 1000)); }
     List<TaskLog> logs(String id) { return store.logs(id); }
     List<AuditEntry> audit(int limit, String actor, String action) { return store.listAudit(Math.min(Math.max(limit, 1), 500), actor, action); }
+
+    String jsonReport(TaskView task) {
+        var payload = new java.util.LinkedHashMap<String, Object>();
+        payload.put("taskId", task.id());
+        payload.put("status", task.status());
+        payload.put("stage", task.stage());
+        payload.put("projectId", task.projectId());
+        payload.put("report", task.report() == null ? java.util.Map.of() : task.report());
+        payload.put("errorMessage", task.errorMessage());
+        try {
+            return json.writeValueAsString(payload);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+            throw new IllegalStateException(error);
+        }
+    }
+
+    String junitReport(TaskView task) {
+        var report = task.report();
+        int tests = 0;
+        int failures = 0;
+        if (report != null) {
+            tests = report.path("passed").asInt(0) + report.path("failed").asInt(0);
+            failures = report.path("failed").asInt(0);
+        }
+        var sb = new StringBuilder();
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        sb.append("<testsuite name=\"").append(escape(task.id())).append("\" tests=\"").append(tests)
+                .append("\" failures=\"").append(failures).append("\" errors=\"0\" skipped=\"0\">");
+        if (report != null && report.has("lanes")) {
+            for (var lane : report.path("lanes")) {
+                var type = lane.path("type").asText("unknown");
+                var status = lane.path("status").asText("unknown");
+                var summary = lane.path("summary").asText("");
+                sb.append("<testcase classname=\"").append(escape(task.id())).append("\" name=\"").append(escape(type)).append("\" status=\"run\">");
+                if ("failed".equals(status)) sb.append("<failure message=\"").append(escape(summary)).append("\"/>");
+                sb.append("</testcase>");
+            }
+        }
+        if (task.errorMessage() != null) sb.append("<system-err>").append(escape(task.errorMessage())).append("</system-err>");
+        sb.append("</testsuite>");
+        return sb.toString();
+    }
+
+    private String escape(String value) {
+        return value == null ? "" : value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    }
 
     TaskView cancel(String id) {
         if (store.cancel(id)) {
