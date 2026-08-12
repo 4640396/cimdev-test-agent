@@ -20,6 +20,12 @@ management:
     web:
       exposure:
         include: health,info,metrics
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 test-agent:
   storage-root: ${TEST_AGENT_STORAGE_ROOT:./data}
   api-token: ${TEST_AGENT_API_TOKEN:}

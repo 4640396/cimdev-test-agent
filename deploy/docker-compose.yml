@@ -1,0 +1,34 @@
+services:
+  mysql:
+    image: mysql:5.7
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+      MYSQL_DATABASE: cimdev_test_agent
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-change-me}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  control-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    environment:
+      TEST_AGENT_MYSQL_URL: jdbc:mysql://mysql:3306/cimdev_test_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+      TEST_AGENT_MYSQL_USER: root
+      TEST_AGENT_MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+      TEST_AGENT_API_TOKEN: ${TEST_AGENT_API_TOKEN:change-me}
+      TEST_AGENT_STORAGE_ROOT: /data/artifacts
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "18088:8088"
+    volumes:
+      - artifacts-data:/data/artifacts
+    depends_on:
+      mysql:
+        condition: service_healthy
+volumes:
+  mysql-data:
+  artifacts-data:

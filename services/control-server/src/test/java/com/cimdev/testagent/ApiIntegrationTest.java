@@ -207,6 +207,20 @@ class ApiIntegrationTest {
                 .andExpect(jsonPath("$.info.title").value("CIMDEV Test Agent API"));
     }
 
+    @Test
+    void tracingProducesTraceId() {
+        var span = applicationContext.getBean(io.micrometer.tracing.Tracer.class).nextSpan().start();
+        try {
+            var traceId = span.context().traceId();
+            org.assertj.core.api.Assertions.assertThat(traceId).isNotBlank();
+        } finally {
+            span.end();
+        }
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.context.ApplicationContext applicationContext;
+
     private String createProject(String name) throws Exception {
         var response = mvc.perform(post("/api/projects").headers(auth()).contentType(MediaType.APPLICATION_JSON).content("""
                 {"name":"%s","projectPath":"C:/works/%s","defaultVersion":"main","defaultTestTypes":["unit"]}
