@@ -38,7 +38,7 @@ const RESULT_SCHEMA = {
 } as const
 
 function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: string): string {
-  const base = [
+  const lines = [
     '你是 CIMDEV Test Agent 的测试执行代理。必须在当前项目内完成真实测试，不得虚构结果。',
     `系统：${input.systemName}`,
     `版本：${input.version || '未识别'}`,
@@ -57,8 +57,12 @@ function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: stri
     '8. 将测试计划、原始日志和综合报告保存到指定产物目录。',
     '9. artifacts 只返回当前项目内确实存在的相对路径。',
     '10. 最终严格按输出 Schema 返回，不要把计划或推测写成测试结果。',
-    '11. 测试日志与报告产物必须写入项目目录内（建议 .test-agent/results），禁止写入系统临时目录；越界制品会被丢弃。'
-  ].join('\n')
+    '11. 测试日志与报告产物必须写入项目目录内（建议 .test-agent/results），禁止写入系统临时目录；越界制品会被丢弃。',
+    ...(input.targetClasses && input.targetClasses.length > 0
+      ? [`12. 本次必须为以下核心类生成单元测试：${input.targetClasses.join('、')}。为每个类至少生成一个可编译、可运行的 JUnit 测试，不得以“无测试设施”为由跳过。`]
+      : [])
+  ]
+  const base = lines.join('\n')
   return knowledge ? `${base}\n\n## 业务知识参考（仅作带来源的上下文，冲突转人工确认）\n${knowledge}` : base
 }
 

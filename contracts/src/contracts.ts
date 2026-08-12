@@ -10,6 +10,7 @@ export interface TaskInput {
   requiredCapabilities?: string[]
   coverageTarget?: number
   knowledgeRoots?: string[]
+  targetClasses?: string[]
 }
 
 export interface ProjectSelection {

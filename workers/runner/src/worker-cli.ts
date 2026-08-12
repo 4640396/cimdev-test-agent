@@ -6,7 +6,7 @@ import { basename, join, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
 import { buildKnowledgeContext, collectKnowledgeRefs, resolveKnowledgeRoots } from './knowledge.js'
-import { computeMetrics, countAssertionFiles, runMavenUnitTests, runNodeUnitTests } from './validator.js'
+import { computeMetrics, countAssertionFiles, runMavenUnitTests, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
 import type { TaskInput } from '../../../contracts/src/contracts.js'
 
 interface ClaimedTask { taskId: string; input: TaskInput }
@@ -149,44 +149,57 @@ async function runTask(task: ClaimedTask): Promise<void> {
           ? runNodeUnitTests(task.input.projectPath)
           : null
       : null
-    if (unitOutcome) {
+    const uiOutcome = task.input.testTypes.includes('ui') && capabilities.includes('playwright')
+      ? runPlaywrightUiTests(task.input.projectPath)
+      : null
+    if (unitOutcome || uiOutcome) {
       await emitStage(task.taskId, 'VALIDATING')
-      const outcome = unitOutcome
+      const baseOutcome = (unitOutcome ?? uiOutcome)!
       const assertions = countAssertionFiles(task.input.projectPath)
-      const metrics = computeMetrics(outcome, assertions)
+      const metrics = computeMetrics(baseOutcome, assertions)
       const knowledgeRate = knowledge.degraded ? 0 : Math.min(1, knowledge.refs.length / Math.max(assertions.total, 1))
-      if (outcome.fail > 0 || outcome.compileError) {
-        throw new Error(`独立验证未通过：${outcome.fail} 个测试失败${outcome.compileError ? '，存在编译错误' : ''}`)
+      const totalFail = (unitOutcome?.fail ?? 0) + (uiOutcome?.fail ?? 0)
+      const totalPass = (unitOutcome?.pass ?? 0) + (uiOutcome?.pass ?? 0)
+      const compileError = unitOutcome?.compileError === true
+      if (totalFail > 0 || compileError) {
+        throw new Error(`独立验证未通过：${totalFail} 个测试失败${compileError ? '，存在编译错误' : ''}`)
       }
-      if (result.report.passed !== outcome.pass || result.report.failed !== outcome.fail) {
+      if (result.report.passed !== totalPass || result.report.failed !== totalFail) {
         await emit(task.taskId, {
           level: 'warning',
-          message: `独立验证与 Agent 报告不一致（Agent ${result.report.passed}/${result.report.failed}，独立 ${outcome.pass}/${outcome.fail}），以独立验证为准`
+          message: `独立验证与 Agent 报告不一致（Agent ${result.report.passed}/${result.report.failed}，独立 ${totalPass}/${totalFail}），以独立验证为准`
         })
       }
-      const lanes = result.lanes.map((lane) => lane.type === 'unit'
-        ? { ...lane, summary: `${lane.summary}（独立验证 ${outcome.pass} 通过 / ${outcome.fail} 失败，覆盖率 ${outcome.coverage ?? 'N/A'}%）` }
-        : lane)
+      const lanes = result.lanes.map((lane) => {
+        if (lane.type === 'unit' && unitOutcome) {
+          return { ...lane, summary: `${lane.summary}（独立验证 ${unitOutcome.pass} 通过 / ${unitOutcome.fail} 失败，覆盖率 ${unitOutcome.coverage ?? 'N/A'}%）` }
+        }
+        if (lane.type === 'ui' && uiOutcome) {
+          return { ...lane, summary: `${lane.summary}（Playwright 独立验证 ${uiOutcome.pass} 通过 / ${uiOutcome.fail} 失败）` }
+        }
+        return lane
+      })
+      const coverage = unitOutcome?.coverage ?? null
       const coverageTarget = task.input.coverageTarget ?? 60
-      const coveragePassed = outcome.coverage === null
+      const coveragePassed = coverage === null
         ? true
-        : outcome.coverage >= coverageTarget
+        : coverage >= coverageTarget
       const gate = {
         coverageTarget,
-        coverage: outcome.coverage,
+        coverage,
         effectiveRate: metrics.effectiveRate,
         passed: coveragePassed,
-        reason: outcome.coverage === null
+        reason: coverage === null
           ? '未取得覆盖率数据，覆盖率门禁跳过（需配置覆盖率工具）'
           : coveragePassed
             ? '覆盖率达标'
-            : `覆盖率 ${outcome.coverage}% 未达到目标 ${coverageTarget}%`
+            : `覆盖率 ${coverage}% 未达到目标 ${coverageTarget}%`
       }
       const report = {
         ...result.report,
-        passed: outcome.pass,
-        failed: outcome.fail,
-        coverage: outcome.coverage,
+        passed: totalPass,
+        failed: totalFail,
+        coverage,
         metrics: { ...metrics, knowledgeRate },
         gate,
         knowledge: knowledgeMeta

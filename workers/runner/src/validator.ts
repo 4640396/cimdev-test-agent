@@ -109,6 +109,30 @@ export function runMavenUnitTests(projectPath: string): MavenTestOutcome {
   return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError, raw }
 }
 
+/** 独立重跑 Playwright UI 测试（JSON reporter），解析 expected/unexpected/flaky。 */
+export function runPlaywrightUiTests(projectPath: string): NodeTestOutcome {
+  const result = process.platform === 'win32'
+    ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'npx.cmd playwright test --reporter=json'], { cwd: projectPath, encoding: 'utf8', timeout: 300_000, windowsHide: true })
+    : spawnSync('npx', ['playwright', 'test', '--reporter=json'], { cwd: projectPath, encoding: 'utf8', timeout: 300_000 })
+  const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  let tests = 0
+  let pass = 0
+  let fail = 0
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(raw.slice(start, end + 1)) as { stats?: { expected?: number; unexpected?: number; flaky?: number } }
+      tests = Number(parsed.stats?.expected ?? 0) + Number(parsed.stats?.unexpected ?? 0) + Number(parsed.stats?.flaky ?? 0)
+      pass = Number(parsed.stats?.expected ?? 0)
+      fail = Number(parsed.stats?.unexpected ?? 0)
+    } catch {
+      // 解析失败时按 0 处理
+    }
+  }
+  return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError: false, raw }
+}
+
 /** 统计测试文件数与“含断言”的文件数（MVP 静态抽检，后续可换变异测试）。 */
 export function countAssertionFiles(projectPath: string): AssertionCount {
   const files: string[] = []
