@@ -97,15 +97,51 @@ function createWindow(): void {
 }
 
 function buildMenu(): void {
-  const menu = Menu.buildFromTemplate([
+  const template: Electron.MenuItemConstructorOptions[] = [
     {
-      label: '配置',
+      label: 'File',
+      submenu: [
+        { role: 'quit', label: 'Exit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' }, { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' }, { role: 'zoom' }, { role: 'close' }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        { role: 'about', label: 'About CIMDEV Test Agent' }
+      ]
+    },
+    {
+      label: 'Configure',
       submenu: [
         {
-          label: '知识库目录…',
+          label: 'Knowledge Base Directory…',
           click: async () => {
             if (!mainWindow) return
-            const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'multiSelections'], title: '选择知识库目录（可多选）' })
+            const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'multiSelections'], title: 'Select knowledge base directories' })
             if (result.canceled) return
             knowledgeRoots = result.filePaths
             mainWindow.webContents.send('config:changed', knowledgeRoots)
@@ -113,7 +149,8 @@ function buildMenu(): void {
         }
       ]
     }
-  ])
+  ]
+  const menu = Menu.buildFromTemplate(template)
   Menu.setApplicationMenu(menu)
 }
 
