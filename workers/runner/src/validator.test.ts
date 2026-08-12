@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterAll, describe, expect, it } from 'vitest'
-import { computeMetrics, countAssertionFiles, runNodeUnitTests } from './validator.js'
+import { computeMetrics, countAssertionFiles, parseSurefireSummary, runNodeUnitTests } from './validator.js'
 
 const projects: string[] = []
 
@@ -70,5 +70,11 @@ describe('validator', () => {
     const count = countAssertionFiles(root)
     expect(count.total).toBe(2)
     expect(count.withAssertions).toBe(1)
+  })
+
+  it('解析 surefire 汇总行', () => {
+    const summary = parseSurefireSummary('Tests run: 3, Failures: 1, Errors: 0, Skipped: 1, Time elapsed: 0.5 sec')
+    expect(summary).toEqual({ tests: 3, fail: 1 })
+    expect(parseSurefireSummary('no summary')).toBeNull()
   })
 })

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import type { TaskInput } from '../../../../contracts/src/contracts.js'
 import type { AgentAdapter, AgentEvent, AgentRunResult } from './types.js'
@@ -49,13 +49,15 @@ function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: stri
     '1. 识别项目技术栈、模块、现有测试框架和可用构建命令。',
     '2. 仅为选中的测试类型生成或补强必要测试；尽量不修改生产代码。',
     '3. 必须调用项目真实工具执行测试，例如 go test、Maven、Gradle、npm、Vitest 或 Playwright。',
+    '3.1 这是硬性要求：若项目没有任何测试文件，必须创建最小可编译的 JUnit（或对应框架）测试，覆盖至少 1-2 个核心服务或工具类，并真实运行它们；不得以“无测试设施”为由跳过生成。',
     '4. 单元测试必须编译、执行并包含有业务意义的断言；仅判空断言不能视为有效用例。',
     '5. 回归测试必须基于真实核心场景或已有回归基线；没有可执行条件时标记失败并说明原因。',
     '6. UI 测试必须真实启动或连接应用并执行浏览器操作；成功执行时保存截图，否则标记失败。',
     '7. passed、failed 和 coverage 只能来自真实测试工具输出；没有覆盖率数据时返回 null。',
     '8. 将测试计划、原始日志和综合报告保存到指定产物目录。',
     '9. artifacts 只返回当前项目内确实存在的相对路径。',
-    '10. 最终严格按输出 Schema 返回，不要把计划或推测写成测试结果。'
+    '10. 最终严格按输出 Schema 返回，不要把计划或推测写成测试结果。',
+    '11. 测试日志与报告产物必须写入项目目录内（建议 .test-agent/results），禁止写入系统临时目录；越界制品会被丢弃。'
   ].join('\n')
   return knowledge ? `${base}\n\n## 业务知识参考（仅作带来源的上下文，冲突转人工确认）\n${knowledge}` : base
 }
@@ -86,13 +88,6 @@ function validateResult(value: unknown, projectPath: string): AgentRunResult {
   if (!Array.isArray(result.lanes) || !result.report || !Array.isArray(result.artifacts)) {
     throw new Error('Codex CLI 测试结果结构不完整')
   }
-  for (const artifact of result.artifacts) {
-    const absolute = resolve(projectPath, artifact)
-    const root = resolve(projectPath)
-    if (!(absolute === root || absolute.startsWith(`${root}\\`)) || !existsSync(absolute)) {
-      throw new Error(`Codex CLI 返回了不存在或越界的产物：${artifact}`)
-    }
-  }
   return result
 }
 
@@ -106,6 +101,15 @@ function parseJsonFromText(text: string): unknown {
   if (match) {
     try {
       return JSON.parse(match[1])
+    } catch {
+      // 继续回退
+    }
+  }
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(text.slice(start, end + 1))
     } catch {
       // 继续回退
     }
@@ -250,6 +254,21 @@ export class CodexCliAdapter implements AgentAdapter {
           const parsed = extractStructuredResult(resultPath, eventsPath)
           if (parsed === null) return reject(new Error('Codex CLI 未返回可解析的结构化测试结果'))
           const result = validateResult(parsed, input.projectPath)
+          const root = resolve(input.projectPath)
+          const validArtifacts = result.artifacts.filter((artifact) => {
+            const absolute = resolve(input.projectPath, artifact)
+            let isFile = false
+            try {
+              isFile = statSync(absolute).isFile()
+            } catch {
+              isFile = false
+            }
+            return (absolute === root || absolute.startsWith(`${root}\\`)) && isFile
+          })
+          if (validArtifacts.length !== result.artifacts.length) {
+            emit({ level: 'warning', message: `忽略 ${result.artifacts.length - validArtifacts.length} 个越界或不存在制品` })
+          }
+          result.artifacts = validArtifacts
           const ownArtifacts = [relative(input.projectPath, resultPath), relative(input.projectPath, eventsPath)]
           result.artifacts = [...new Set([...result.artifacts, ...ownArtifacts])]
           emit({ level: 'success', message: 'Codex CLI 已返回经过真实执行的结构化测试结果' })

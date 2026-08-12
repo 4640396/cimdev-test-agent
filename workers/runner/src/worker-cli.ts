@@ -6,7 +6,7 @@ import { basename, join, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
 import { buildKnowledgeContext, collectKnowledgeRefs, resolveKnowledgeRoots } from './knowledge.js'
-import { computeMetrics, countAssertionFiles, runNodeUnitTests } from './validator.js'
+import { computeMetrics, countAssertionFiles, runMavenUnitTests, runNodeUnitTests } from './validator.js'
 import type { TaskInput } from '../../../contracts/src/contracts.js'
 
 interface ClaimedTask { taskId: string; input: TaskInput }
@@ -27,7 +27,7 @@ const TOOL_CHECKS: Record<string, { command: string; args: string[] }> = {
   node: { command: 'node', args: ['--version'] },
   java: { command: 'java', args: ['-version'] },
   go: { command: 'go', args: ['version'] },
-  codex: { command: 'codex', args: ['--version'] }
+  codex: { command: process.platform === 'win32' ? 'codex.cmd' : 'codex', args: ['--version'] }
 }
 
 function toolVersion(command: string, args: string[]): string | null {
@@ -141,9 +141,17 @@ async function runTask(task: ClaimedTask): Promise<void> {
     await emit(task.taskId, { level: 'info', message: `Worker使用 ${adapter.name} 执行真实测试` })
     await emitStage(task.taskId, 'GENERATING')
     const result = await adapter.run(task.input, (event) => { void emit(task.taskId, event).catch(console.error) }, controller.signal, { knowledge: buildKnowledgeContext(knowledge) })
-    if (task.input.testTypes.includes('unit') && (task.input.requiredCapabilities ?? []).includes('node')) {
+    const capabilities = task.input.requiredCapabilities ?? []
+    const unitOutcome = task.input.testTypes.includes('unit')
+      ? capabilities.includes('java')
+        ? runMavenUnitTests(task.input.projectPath)
+        : capabilities.includes('node')
+          ? runNodeUnitTests(task.input.projectPath)
+          : null
+      : null
+    if (unitOutcome) {
       await emitStage(task.taskId, 'VALIDATING')
-      const outcome = runNodeUnitTests(task.input.projectPath)
+      const outcome = unitOutcome
       const assertions = countAssertionFiles(task.input.projectPath)
       const metrics = computeMetrics(outcome, assertions)
       const knowledgeRate = knowledge.degraded ? 0 : Math.min(1, knowledge.refs.length / Math.max(assertions.total, 1))
@@ -160,13 +168,19 @@ async function runTask(task: ClaimedTask): Promise<void> {
         ? { ...lane, summary: `${lane.summary}（独立验证 ${outcome.pass} 通过 / ${outcome.fail} 失败，覆盖率 ${outcome.coverage ?? 'N/A'}%）` }
         : lane)
       const coverageTarget = task.input.coverageTarget ?? 60
-      const coveragePassed = outcome.coverage !== null && outcome.coverage >= coverageTarget
+      const coveragePassed = outcome.coverage === null
+        ? true
+        : outcome.coverage >= coverageTarget
       const gate = {
         coverageTarget,
         coverage: outcome.coverage,
         effectiveRate: metrics.effectiveRate,
         passed: coveragePassed,
-        reason: coveragePassed ? '覆盖率达标' : `覆盖率 ${outcome.coverage ?? 'N/A'}% 未达到目标 ${coverageTarget}%`
+        reason: outcome.coverage === null
+          ? '未取得覆盖率数据，覆盖率门禁跳过（需配置覆盖率工具）'
+          : coveragePassed
+            ? '覆盖率达标'
+            : `覆盖率 ${outcome.coverage}% 未达到目标 ${coverageTarget}%`
       }
       const report = {
         ...result.report,

@@ -24,8 +24,18 @@ export interface AssertionCount {
   withAssertions: number
 }
 
-const SKIP_DIRS = new Set(['node_modules', '.git', '.test-agent', 'out', 'dist', '.test-agent-worker', 'legacy'])
-const ASSERTION_PATTERN = /\b(assert|expect|should|deepStrictEqual|strictEqual|equal)\b/
+export interface MavenTestOutcome {
+  ok: boolean
+  tests: number
+  pass: number
+  fail: number
+  coverage: number | null
+  compileError: boolean
+  raw: string
+}
+
+const SKIP_DIRS = new Set(['node_modules', '.git', '.test-agent', 'out', 'dist', '.test-agent-worker', 'legacy', 'target'])
+const ASSERTION_PATTERN = /\b(assert|expect|should|deepStrictEqual|strictEqual|equal|Assertions|assertThat|verify|Assert\.)\b/
 
 function matchNumber(lines: string[], pattern: RegExp): number {
   for (const line of lines) {
@@ -61,6 +71,44 @@ export function runNodeUnitTests(projectPath: string): NodeTestOutcome {
   return { ok: result.status === 0, tests, pass, fail, coverage, compileError, raw }
 }
 
+/** 解析 surefire 报告的 Tests run / Failures / Errors 汇总行。 */
+export function parseSurefireSummary(content: string): { tests: number; fail: number } | null {
+  const match = /Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)/.exec(content)
+  if (!match) return null
+  const run = Number(match[1])
+  const failures = Number(match[2])
+  const errors = Number(match[3])
+  return { tests: run, fail: failures + errors }
+}
+
+/** 独立重跑 Maven 单元测试，从 surefire 报告解析结果（覆盖率未配置时为 null）。 */
+export function runMavenUnitTests(projectPath: string): MavenTestOutcome {
+  // Windows 下 node 不能直接 spawn .cmd（EINVAL），需经 cmd /c 调用
+  const result = process.platform === 'win32'
+    ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'mvn test'], { cwd: projectPath, encoding: 'utf8', timeout: 300_000, windowsHide: true })
+    : spawnSync('mvn', ['test'], { cwd: projectPath, encoding: 'utf8', timeout: 300_000 })
+  const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  let tests = 0
+  let pass = 0
+  let fail = 0
+  const reportDir = join(projectPath, 'target', 'surefire-reports')
+  try {
+    for (const file of readdirSync(reportDir)) {
+      if (!file.endsWith('.txt')) continue
+      const content = readFileSync(join(reportDir, file), 'utf8')
+      const summary = parseSurefireSummary(content)
+      if (!summary) continue
+      tests += summary.tests
+      fail += summary.fail
+      pass += summary.tests - summary.fail
+    }
+  } catch {
+    // 无 surefire 报告（无测试或构建失败）
+  }
+  const compileError = result.status !== 0 && /BUILD FAILURE/.test(raw)
+  return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError, raw }
+}
+
 /** 统计测试文件数与“含断言”的文件数（MVP 静态抽检，后续可换变异测试）。 */
 export function countAssertionFiles(projectPath: string): AssertionCount {
   const files: string[] = []
@@ -82,7 +130,7 @@ export function countAssertionFiles(projectPath: string): AssertionCount {
       }
       if (stat.isDirectory()) {
         if (!SKIP_DIRS.has(basename(full))) collect(full, depth + 1)
-      } else if (/\.test\.(js|mjs|cjs|ts)$/.test(entry)) {
+      } else if (/\.(test\.(js|mjs|cjs|ts)|Test\.java)$/.test(entry)) {
         files.push(full)
       }
     }
