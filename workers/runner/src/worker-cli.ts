@@ -6,7 +6,7 @@ import { basename, join, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
 import { buildKnowledgeContext, collectKnowledgeRefs, resolveKnowledgeRoots } from './knowledge.js'
-import { computeMetrics, countAssertionFiles, runMavenUnitTests, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
+import { computeMetrics, countAssertionFiles, resolveBundledPlaywrightCli, runMavenUnitTests, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
 import type { TaskInput } from '../../../contracts/src/contracts.js'
 
 interface ClaimedTask { taskId: string; input: TaskInput }
@@ -27,7 +27,8 @@ const TOOL_CHECKS: Record<string, { command: string; args: string[] }> = {
   node: { command: 'node', args: ['--version'] },
   java: { command: 'java', args: ['-version'] },
   go: { command: 'go', args: ['version'] },
-  codex: { command: process.platform === 'win32' ? 'codex.cmd' : 'codex', args: ['--version'] }
+  codex: { command: process.platform === 'win32' ? 'codex.cmd' : 'codex', args: ['--version'] },
+  playwright: { command: 'node', args: [resolveBundledPlaywrightCli(), '--version'] }
 }
 
 function toolVersion(command: string, args: string[]): string | null {

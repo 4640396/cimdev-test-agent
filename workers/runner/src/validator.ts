@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 export interface NodeTestOutcome {
@@ -109,28 +109,74 @@ export function runMavenUnitTests(projectPath: string): MavenTestOutcome {
   return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError, raw }
 }
 
-/** 独立重跑 Playwright UI 测试（JSON reporter），解析 expected/unexpected/flaky。 */
+/** 解析 Test Agent 内置的 Playwright CLI 路径（Worker 预置能力，被测项目无需安装）。 */
+export function resolveBundledPlaywrightCli(): string {
+  const fromEnv = process.env.TEST_AGENT_PLAYWRIGHT_CLI
+  if (fromEnv) return fromEnv
+  return join(process.cwd(), 'node_modules', '@playwright', 'test', 'cli.js')
+}
+
+/** 独立重跑 Playwright UI 测试：使用内置 Playwright + 自动生成临时脚手架（被测项目零安装）。 */
 export function runPlaywrightUiTests(projectPath: string): NodeTestOutcome {
-  const result = process.platform === 'win32'
-    ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'npx.cmd playwright test --reporter=json'], { cwd: projectPath, encoding: 'utf8', timeout: 300_000, windowsHide: true })
-    : spawnSync('npx', ['playwright', 'test', '--reporter=json'], { cwd: projectPath, encoding: 'utf8', timeout: 300_000 })
-  const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
-  let tests = 0
-  let pass = 0
-  let fail = 0
-  const start = raw.indexOf('{')
-  const end = raw.lastIndexOf('}')
-  if (start >= 0 && end > start) {
+  const cli = resolveBundledPlaywrightCli()
+  const scaffoldRoot = join(process.cwd(), '.test-agent-pw', `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  mkdirSync(join(scaffoldRoot, 'tests'), { recursive: true })
+  writeFileSync(join(scaffoldRoot, 'package.json'), '{"type":"module"}', 'utf8')
+  writeFileSync(join(scaffoldRoot, 'pw.config.js'), `
+const project = ${JSON.stringify(projectPath)}
+export default {
+  testDir: './tests',
+  timeout: 120000,
+  fullyParallel: false,
+  use: { baseURL: 'http://127.0.0.1:5199', channel: 'msedge', headless: true },
+  webServer: {
+    command: 'cmd /c "cd /d ' + project + ' && npm run dev -- --host 127.0.0.1 --port 5199"',
+    url: 'http://127.0.0.1:5199',
+    reuseExistingServer: true,
+    timeout: 180000
+  },
+  reporter: [['json']]
+}
+`, 'utf8')
+  writeFileSync(join(scaffoldRoot, 'tests', 'smoke.spec.js'), `
+import { test, expect } from '@playwright/test'
+test('login page loads and renders', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('body')).not.toBeEmpty()
+  await expect(page.locator('input, button').first()).toBeVisible()
+})
+`, 'utf8')
+  try {
+    const result = spawnSync('node', [cli, 'test', '--config', join(scaffoldRoot, 'pw.config.js')], {
+      cwd: scaffoldRoot,
+      encoding: 'utf8',
+      timeout: 300_000,
+      windowsHide: true
+    })
+    const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
+    let tests = 0
+    let pass = 0
+    let fail = 0
+    const start = raw.indexOf('{')
+    const end = raw.lastIndexOf('}')
+    if (start >= 0 && end > start) {
+      try {
+        const parsed = JSON.parse(raw.slice(start, end + 1)) as { stats?: { expected?: number; unexpected?: number; flaky?: number } }
+        tests = Number(parsed.stats?.expected ?? 0) + Number(parsed.stats?.unexpected ?? 0) + Number(parsed.stats?.flaky ?? 0)
+        pass = Number(parsed.stats?.expected ?? 0)
+        fail = Number(parsed.stats?.unexpected ?? 0)
+      } catch {
+        // 解析失败时按 0 处理
+      }
+    }
+    return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError: false, raw }
+  } finally {
     try {
-      const parsed = JSON.parse(raw.slice(start, end + 1)) as { stats?: { expected?: number; unexpected?: number; flaky?: number } }
-      tests = Number(parsed.stats?.expected ?? 0) + Number(parsed.stats?.unexpected ?? 0) + Number(parsed.stats?.flaky ?? 0)
-      pass = Number(parsed.stats?.expected ?? 0)
-      fail = Number(parsed.stats?.unexpected ?? 0)
+      rmSync(scaffoldRoot, { recursive: true, force: true })
     } catch {
-      // 解析失败时按 0 处理
+      // 清理失败忽略
     }
   }
-  return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError: false, raw }
 }
 
 /** 统计测试文件数与“含断言”的文件数（MVP 静态抽检，后续可换变异测试）。 */
