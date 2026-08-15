@@ -31,3 +31,19 @@ export function createAgentAdapter(projectPath?: string): AgentAdapter | null {
   }
   throw new Error(`Unsupported TEST_AGENT_PROVIDER: ${provider}`)
 }
+
+/**
+ * Local Host provider selection. The desktop product is AI-first: when the
+ * host opts into AI mode, prefer Codex CLI (read code, generate tests, run,
+ * fix and collect coverage), then Claude Code, then the deterministic
+ * existing-suite adapters as a safe fallback.
+ */
+export function createHostAgentAdapter(projectPath: string, preferAi: boolean): AgentAdapter | null {
+  if (preferAi && !process.env.TEST_AGENT_PROVIDER?.trim()) {
+    const codex = resolveCodexExecutable()
+    if (codex) return new CodexCliAdapter(codex)
+    const claude = resolveClaudeExecutable()
+    if (claude) return new ClaudeCodeAdapter(claude)
+  }
+  return createAgentAdapter(projectPath)
+}

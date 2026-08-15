@@ -32,6 +32,7 @@ export interface ProjectSelection {
   path: string
   detectedSystem: string
   detectedVersion: string
+  detectedTestTypes?: TestType[]
 }
 
 export interface RuntimeStatus {
@@ -53,6 +54,34 @@ export interface LaneState {
   summary: string
 }
 
+export interface TestCaseRecord {
+  id: string
+  title: string
+  scenario: string
+  steps: string[]
+  expected: string
+  priority: 'low' | 'medium' | 'high'
+  layer?: 'api' | 'ui' | 'unit'
+  source?: string
+}
+
+export interface RoutingRecord {
+  caseId: string
+  layer: 'api' | 'ui' | 'unit'
+  runner: string | null
+  valueScore: number
+  reason: string
+  skipped: boolean
+}
+
+export interface FailedCaseRecord {
+  name: string
+  layer: string
+  error: string
+  suggestion?: string
+  screenshot?: string
+}
+
 export interface TaskSnapshot {
   taskId: string
   status: TaskStatus
@@ -63,6 +92,17 @@ export interface TaskSnapshot {
     passed: number
     failed: number
     coverage: number | null
+    durationMs?: number
+    summary?: string
+    cases?: TestCaseRecord[]
+    casesMeta?: {
+      count: number
+      byLayer: Record<string, number>
+      byPriority: Record<string, number>
+    }
+    routing?: RoutingRecord[]
+    failedCases?: FailedCaseRecord[]
+    screenshots?: string[]
     metrics?: {
       compileRate: number
       execRate: number
@@ -89,6 +129,16 @@ export interface TaskSnapshot {
   }
 }
 
+export interface ExportResult {
+  saved: boolean
+  path?: string
+  error?: string
+}
+
+export interface CopyResult {
+  copied: boolean
+}
+
 export interface ProjectRecord {
   id: string
   name: string
@@ -111,6 +161,7 @@ export interface ScheduleRecord {
 
 export interface DesktopApi {
   selectProject(): Promise<ProjectSelection | null>
+  detectProject(path: string): Promise<ProjectSelection | null>
   getKnowledgeRoots(): Promise<string[]>
   onKnowledgeRootsChanged(listener: (roots: string[]) => void): () => void
   getRuntimeStatus(): Promise<RuntimeStatus>
@@ -119,6 +170,8 @@ export interface DesktopApi {
   cancelTask(taskId: string): Promise<TaskSnapshot | null>
   retryTask(taskId: string): Promise<{ taskId: string } | null>
   subscribeTask(listener: (snapshot: TaskSnapshot) => void): () => void
+  exportReport(format: 'markdown' | 'html' | 'json', snapshot: TaskSnapshot): Promise<ExportResult>
+  copyReportSummary(snapshot: TaskSnapshot): Promise<CopyResult>
 }
 
 export interface LocalHostStatus {

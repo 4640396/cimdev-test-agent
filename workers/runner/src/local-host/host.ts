@@ -1,7 +1,7 @@
-import { realpathSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { createAgentAdapter } from '../agent/factory.js'
+import { createHostAgentAdapter } from '../agent/factory.js'
 import type { AgentAdapter } from '../agent/types.js'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -17,6 +17,7 @@ import { RunEventStore } from '../run-events.js'
 import { authorizeProjectPath, parseAllowedProjectRoots } from '../security.js'
 import { runTestKernel } from '../test-kernel.js'
 import { EXECUTION_ID_PATTERN, LOCAL_HOST_PROTOCOL_VERSION, type ClientMessage, type HostMessage } from '../../../../contracts/src/local-host-protocol.js'
+import type { TestType } from '../../../../contracts/src/contracts.js'
 
 export const LOCAL_HOST_VERSION = '0.1.0'
 
@@ -26,6 +27,7 @@ export interface LocalAgentHostOptions {
   pluginPolicyOverrides?: Record<string, Partial<WorkerPluginPolicy>>
   testExecutionConfig?: TestExecutionConfig
   createProvider?: () => AgentAdapter | null
+  preferAi?: boolean
 }
 
 interface ActiveRun {
@@ -84,7 +86,9 @@ export class LocalAgentHost {
           await send({ id: message.id, kind: 'error', message: authorization.reason ?? 'Project path authorization failed' })
           return
         }
-        const provider = this.options.createProvider ? this.options.createProvider() : createAgentAdapter(message.input.projectPath)
+        const provider = this.options.createProvider
+          ? this.options.createProvider()
+          : createHostAgentAdapter(message.input.projectPath, this.options.preferAi ?? true)
         if (!provider) {
           await send({ id: message.id, kind: 'error', message: 'No executable Agent Provider is configured' })
           return
@@ -131,20 +135,18 @@ export class LocalAgentHost {
     const dshSession = dshContext.sessions.create(SessionId(message.executionId), { meta: { cwd: message.input.projectPath } })
     await workspace.attachSession(SessionId(message.executionId))
     runEvents.subscribe((event) => {
-      try { dshSession.append(event.type, event.data) } catch (error) { console.error('DSH session append failed', error) }
-    })
-    runEvents.subscribe((event) => {
       void Promise.resolve(send({ id: message.id, kind: 'run-event', executionId: message.executionId, event })).catch(console.error)
     })
     runEvents.append('run/started', { executionTarget: 'endpoint', workspaceId: active.resolvedPath })
     const pluginRuntime = createWorkerPluginRuntime(this.options.pluginPolicyOverrides)
     const executors = createTestExecutorRegistry(this.options.testExecutionConfig ?? parseTestExecutionConfig())
+    const projectCapabilities = detectProjectCapabilities(message.input.projectPath, message.input.testTypes)
     try {
       const outcome = await runTestKernel({
         executionId: message.executionId,
         projectPath: message.input.projectPath,
         input: message.input,
-        capabilities: this.options.capabilities,
+        capabilities: projectCapabilities,
         provider: active.provider,
         pluginRuntime,
         executors,
@@ -198,8 +200,22 @@ export function parseLocalHostOptions(env: NodeJS.ProcessEnv = process.env): Loc
   const capabilities = (env.TEST_AGENT_HOST_CAPABILITIES ?? 'windows,node,codex-cli,go,java,vue,playwright').split(',').map((value) => value.trim()).filter(Boolean)
   return {
     capabilities,
-    allowedProjectRoots: parseAllowedProjectRoots(env.TEST_AGENT_ALLOWED_PROJECT_ROOTS)
+    allowedProjectRoots: parseAllowedProjectRoots(env.TEST_AGENT_ALLOWED_PROJECT_ROOTS),
+    preferAi: (env.TEST_AGENT_AI_MODE ?? 'true').toLowerCase() !== 'false'
   }
+}
+
+const PLAYWRIGHT_CONFIG_NAMES = ['playwright.config.ts', 'playwright.config.js', 'playwright.config.mjs', 'playwright.config.cjs']
+
+function detectProjectCapabilities(projectPath: string, testTypes: readonly TestType[]): string[] {
+  const capabilities = new Set<string>()
+  if (existsSync(join(projectPath, 'pom.xml'))) capabilities.add('java')
+  if (existsSync(join(projectPath, 'package.json'))) capabilities.add('node')
+  if (existsSync(join(projectPath, 'go.mod'))) capabilities.add('go')
+  if (PLAYWRIGHT_CONFIG_NAMES.some((name) => existsSync(join(projectPath, name))) || testTypes.includes('ui')) {
+    capabilities.add('playwright')
+  }
+  return [...capabilities]
 }
 
 export function canonicalWorkspacePath(projectPath: string): string {

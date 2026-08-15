@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from 'electron'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { basename } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -70,7 +71,8 @@ function ensureLocalHostClient(): LocalHostClient {
   const env = {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
-    TEST_AGENT_HOST_CAPABILITIES: process.env.TEST_AGENT_HOST_CAPABILITIES ?? 'windows,node,codex-cli,go,java,vue,playwright'
+    TEST_AGENT_HOST_CAPABILITIES: process.env.TEST_AGENT_HOST_CAPABILITIES ?? 'windows,node,codex-cli,go,java,vue,playwright',
+    TEST_AGENT_AI_MODE: process.env.TEST_AGENT_AI_MODE ?? 'true'
   }
   const io = createStdioHostIO(process.execPath, [hostCliPath], { cwd: process.cwd(), env })
   const client = new LocalHostClient(io)
@@ -90,6 +92,66 @@ async function detectVersion(projectPath: string): Promise<string> {
   } catch {
     return '未识别'
   }
+}
+
+function detectTestTypes(projectPath: string): TestType[] {
+  const hasPlaywright = ['playwright.config.ts', 'playwright.config.js', 'playwright.config.mjs', 'playwright.config.cjs']
+    .some((name) => existsSync(join(projectPath, name)))
+  if (hasPlaywright) return ['ui']
+  if (existsSync(join(projectPath, 'pom.xml'))) return ['unit', 'regression']
+  if (existsSync(join(projectPath, 'package.json'))) return ['unit']
+  return ['unit']
+}
+
+function reportSummaryText(snapshot: TaskSnapshot): string {
+  const report = snapshot.report
+  const lines = [
+    'CIMDEV 测试报告',
+    `任务：${snapshot.taskId}`,
+    `状态：${snapshot.status}`,
+    `通过：${report?.passed ?? '--'}`,
+    `失败：${report?.failed ?? '--'}`,
+    `覆盖率：${report?.coverage === null || report?.coverage === undefined ? 'N/A' : `${report.coverage}%`}`,
+    report?.gate ? `质量门禁：${report.gate.passed ? '通过' : '未通过'}` : '质量门禁：--'
+  ]
+  if (report?.summary) lines.push(`结论：${report.summary}`)
+  if (report?.failedCases?.length) {
+    lines.push('失败用例：')
+    for (const item of report.failedCases) lines.push(`- ${item.name}：${item.error}`)
+  }
+  return lines.join('\n')
+}
+
+function reportMarkdown(snapshot: TaskSnapshot): string {
+  const report = snapshot.report
+  let md = `# CIMDEV 测试报告\n\n- 任务：\`${snapshot.taskId}\`\n- 状态：${snapshot.status}\n`
+  if (report) {
+    md += `- 通过：${report.passed}\n- 失败：${report.failed}\n- 覆盖率：${report.coverage === null ? 'N/A' : `${report.coverage}%`}\n`
+    if (report.gate) md += `- 质量门禁：${report.gate.passed ? '通过' : '未通过'}\n`
+    if (report.durationMs !== undefined) md += `- 耗时：${Math.round(report.durationMs / 1000)}s\n`
+    if (report.summary) md += `\n## 结论\n\n${report.summary}\n`
+    if (report.cases?.length) {
+      md += `\n## 测试计划（${report.cases.length} 条）\n\n| 用例 | 层级 | 优先级 | 场景 | 预期 |\n|---|---|---|---|---|\n`
+      for (const item of report.cases) md += `| ${item.title} | ${item.layer ?? '-'} | ${item.priority} | ${item.scenario} | ${item.expected} |\n`
+    }
+    if (report.failedCases?.length) {
+      md += `\n## 失败用例\n\n| 用例 | 层级 | 错误 | 建议 |\n|---|---|---|---|\n`
+      for (const item of report.failedCases) md += `| ${item.name} | ${item.layer} | ${item.error} | ${item.suggestion ?? '-'} |\n`
+    }
+  }
+  return md
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char] ?? char)
+}
+
+function reportHtml(snapshot: TaskSnapshot): string {
+  const report = snapshot.report
+  const coverageText = report?.coverage === null || report?.coverage === undefined ? 'N/A' : `${report.coverage}%`
+  const caseRows = (report?.cases ?? []).map((item) => `<tr><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.layer ?? '-')}</td><td>${escapeHtml(item.priority)}</td><td>${escapeHtml(item.scenario)}</td><td>${escapeHtml(item.expected)}</td></tr>`).join('')
+  const failedRows = (report?.failedCases ?? []).map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.layer)}</td><td>${escapeHtml(item.error)}</td><td>${escapeHtml(item.suggestion ?? '-')}</td></tr>`).join('')
+  return `<!doctype html><meta charset="utf-8"><title>CIMDEV 测试报告</title><body style="font-family:system-ui"><h1>CIMDEV 测试报告</h1><p>通过 ${report?.passed ?? '--'} · 失败 ${report?.failed ?? '--'} · 覆盖率 ${coverageText}</p>${report?.summary ? `<p>${escapeHtml(report.summary)}</p>` : ''}<h2>测试计划</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>优先级</th><th>场景</th><th>预期</th></tr>${caseRows}</table><h2>失败用例</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>错误</th><th>建议</th></tr>${failedRows}</table></body>`
 }
 
 function createWindow(): void {
@@ -183,8 +245,42 @@ app.whenReady().then(() => {
     return {
       path,
       detectedSystem: basename(path),
-      detectedVersion: await detectVersion(path)
+      detectedVersion: await detectVersion(path),
+      detectedTestTypes: detectTestTypes(path)
     }
+  })
+
+  ipcMain.handle('project:detect', async (_event, path: string) => {
+    if (!path || !existsSync(path)) return null
+    return {
+      path,
+      detectedSystem: basename(path),
+      detectedVersion: await detectVersion(path),
+      detectedTestTypes: detectTestTypes(path)
+    }
+  })
+
+  ipcMain.handle('report:export', async (_event, format: 'markdown' | 'html' | 'json', snapshot: TaskSnapshot) => {
+    if (!mainWindow) return { saved: false, error: 'window unavailable' }
+    const extension = format === 'json' ? 'json' : format === 'html' ? 'html' : 'md'
+    const content = format === 'json' ? JSON.stringify(snapshot, null, 2) : format === 'html' ? reportHtml(snapshot) : reportMarkdown(snapshot)
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '导出测试报告',
+      defaultPath: `test-report.${extension}`,
+      filters: [{ name: format, extensions: [extension] }]
+    })
+    if (result.canceled || !result.filePath) return { saved: false }
+    try {
+      writeFileSync(result.filePath, content, 'utf8')
+      return { saved: true, path: result.filePath }
+    } catch (error) {
+      return { saved: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.handle('report:copy', async (_event, snapshot: TaskSnapshot) => {
+    clipboard.writeText(reportSummaryText(snapshot))
+    return { copied: true }
   })
 
   ipcMain.handle('runtime:status', async () => {

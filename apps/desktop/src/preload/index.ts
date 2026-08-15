@@ -3,6 +3,7 @@ import type { DesktopApi, LocalHostApi, TaskInput, TaskSnapshot } from '../../..
 
 const api: DesktopApi = {
   selectProject: () => ipcRenderer.invoke('project:select'),
+  detectProject: (path: string) => ipcRenderer.invoke('project:detect', path),
   getKnowledgeRoots: () => ipcRenderer.invoke('config:getKnowledgeRoots'),
   onKnowledgeRootsChanged: (listener: (roots: string[]) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, roots: string[]) => listener(roots)
@@ -14,6 +15,8 @@ const api: DesktopApi = {
   getTask: (taskId: string) => ipcRenderer.invoke('task:get', taskId),
   cancelTask: (taskId: string) => ipcRenderer.invoke('task:cancel', taskId),
   retryTask: (taskId: string) => ipcRenderer.invoke('task:retry', taskId),
+  exportReport: (format, snapshot) => ipcRenderer.invoke('report:export', format, snapshot),
+  copyReportSummary: (snapshot) => ipcRenderer.invoke('report:copy', snapshot),
   subscribeTask: (listener: (snapshot: TaskSnapshot) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: TaskSnapshot) => listener(snapshot)
     ipcRenderer.on('task:snapshot', handler)

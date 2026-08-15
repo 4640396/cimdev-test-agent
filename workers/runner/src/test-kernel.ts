@@ -21,6 +21,9 @@ export interface TestKernelReport {
   passed: number
   failed: number
   coverage: number | null
+  durationMs: number
+  summary: string
+  screenshots?: string[]
   metrics: {
     compileRate: number
     execRate: number
@@ -61,6 +64,7 @@ type Outcome = MavenTestOutput | NodeTestOutcome
 /** Transport-agnostic execution kernel shared by Endpoint Host and Shared Worker. */
 export async function runTestKernel(context: TestKernelSessionContext): Promise<TestKernelOutcome> {
   const { executionId, projectPath, input, capabilities, provider, pluginRuntime, executors, runEvents, signal, emit } = context
+  const startedAt = Date.now()
 
   const emitStage = async (stage: string): Promise<void> => {
     await emit({ level: 'info', message: `进入阶段：${stage}`, stage })
@@ -252,6 +256,11 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     passed: totalPass,
     failed: totalFail,
     coverage,
+    durationMs: Date.now() - startedAt,
+    summary: gate.passed
+      ? `璐ㄩ噺闂ㄧ閫氳繃锛?{totalPass} 閫氳繃 / ${totalFail} 澶辫触锛岃鐩栫巼 ${coverage === null ? 'N/A' : `${coverage}%`}`
+      : `璐ㄩ噺闂ㄧ鏈€氳繃锛?{gate.reason}`,
+    screenshots: uiOutcome?.screenshots ?? [],
     metrics: { ...metrics, knowledgeRate },
     gate,
     knowledge: knowledgeMeta,

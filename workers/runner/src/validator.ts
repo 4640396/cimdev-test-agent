@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join, relative } from 'node:path'
 import type { TestCase } from './router.js'
 
 export interface NodeTestOutcome {
@@ -11,6 +11,7 @@ export interface NodeTestOutcome {
   coverage: number | null
   compileError: boolean
   raw: string
+  screenshots?: string[]
 }
 
 export interface QualityMetrics {
@@ -280,8 +281,11 @@ function runProjectPlaywright(projectPath: string, cli: string): NodeTestOutcome
 }
 
 function runGenericPlaywrightSmoke(projectPath: string, cli: string): NodeTestOutcome {
-  const scaffoldRoot = join(process.cwd(), '.test-agent-pw', `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  const stamp = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const scaffoldRoot = join(process.cwd(), '.test-agent-pw', stamp)
+  const screenshotDir = join(projectPath, '.test-agent', 'screenshots', stamp)
   mkdirSync(join(scaffoldRoot, 'tests'), { recursive: true })
+  mkdirSync(screenshotDir, { recursive: true })
   writeFileSync(join(scaffoldRoot, 'package.json'), '{"type":"module"}', 'utf8')
   writeFileSync(join(scaffoldRoot, 'pw.config.js'), `
 const project = ${JSON.stringify(projectPath)}
@@ -301,10 +305,19 @@ export default {
 `, 'utf8')
   writeFileSync(join(scaffoldRoot, 'tests', 'smoke.spec.js'), `
 import { test, expect } from '@playwright/test'
-test('login page loads and renders', async ({ page }) => {
+import { mkdirSync } from 'node:fs'
+const shotDir = process.env.TEST_AGENT_SCREENSHOT_DIR
+test('frontend loads, clicks and screenshots', async ({ page }) => {
+  if (shotDir) mkdirSync(shotDir, { recursive: true })
   await page.goto('/')
   await expect(page.locator('body')).not.toBeEmpty()
-  await expect(page.locator('input, button').first()).toBeVisible()
+  if (shotDir) await page.screenshot({ path: shotDir + '/01-home.png', fullPage: true })
+  const clickable = page.locator('a[href], button, [role="button"]')
+  if (await clickable.count() > 0) {
+    await clickable.first().click({ timeout: 5000 }).catch(() => {})
+    await page.waitForTimeout(800)
+    if (shotDir) await page.screenshot({ path: shotDir + '/02-after-click.png', fullPage: true })
+  }
 })
 `, 'utf8')
   try {
@@ -312,11 +325,15 @@ test('login page loads and renders', async ({ page }) => {
       cwd: scaffoldRoot,
       encoding: 'utf8',
       timeout: 300_000,
-      windowsHide: true
+      windowsHide: true,
+      env: { ...process.env, TEST_AGENT_SCREENSHOT_DIR: screenshotDir }
     })
     const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
     const stats = parsePlaywrightStats(raw)
-    return { ok: result.status === 0, ...stats, coverage: null, compileError: false, raw }
+    const screenshots = existsSync(screenshotDir)
+      ? readdirSync(screenshotDir).filter((name) => /\.(png|jpg|jpeg)$/i.test(name)).sort().map((name) => relative(projectPath, join(screenshotDir, name)))
+      : []
+    return { ok: result.status === 0, ...stats, coverage: null, compileError: false, raw, screenshots }
   } finally {
     try {
       rmSync(scaffoldRoot, { recursive: true, force: true })
