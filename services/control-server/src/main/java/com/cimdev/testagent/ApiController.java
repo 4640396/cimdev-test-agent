@@ -46,6 +46,7 @@ class ApiController {
         return ResponseEntity.ok(service.jsonReport(task));
     }
     @GetMapping("/tasks/{id}/logs") List<TaskLog> logs(@PathVariable String id) { return service.logs(id); }
+    @GetMapping("/tasks/{id}/run-events") List<RunEventView> runEvents(@PathVariable String id) { return service.runEvents(id); }
     @PostMapping("/tasks/{id}/cancel") TaskView cancel(@PathVariable String id) { return service.cancel(id); }
     @PostMapping("/tasks/{id}/retry") ResponseEntity<TaskView> retry(@PathVariable String id) { return ResponseEntity.accepted().body(service.retry(id)); }
     @GetMapping(value = "/tasks/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE) SseEmitter events(@PathVariable String id) { return service.subscribe(id); }
@@ -61,7 +62,16 @@ class ApiController {
                                                 @RequestParam(required = false) String action) {
         return service.audit(limit, actor, action);
     }
-    @PostMapping("/workers/register") WorkerRegisterResponse register(@Valid @RequestBody WorkerRegisterRequest request) { return service.register(request); }
+    @PostMapping("/workers/register")
+    ResponseEntity<?> register(@Valid @RequestBody WorkerRegisterRequest request,
+                               @RequestHeader(value = "X-Worker-Id", required = false) String headerWorkerId,
+                               @RequestHeader(value = "X-Worker-Secret", required = false) String secret) {
+        if (request.id() != null && service.workerExists(request.id())
+                && (!request.id().equals(headerWorkerId) || !isWorker(headerWorkerId, secret))) {
+            return forbidden("已有Worker身份必须使用当前secret轮换");
+        }
+        return ResponseEntity.ok(service.register(request, headerWorkerId, secret));
+    }
     @PostMapping("/workers/{id}/heartbeat")
     ResponseEntity<?> heartbeat(@PathVariable String id,
                                 @RequestHeader(value = "X-Worker-Id", required = false) String headerWorkerId,
@@ -89,6 +99,15 @@ class ApiController {
         return ResponseEntity.ok().build();
     }
 
+    @GetMapping("/worker/tasks/{taskId}/status")
+    ResponseEntity<?> workerTaskStatus(@PathVariable String taskId,
+                                       @RequestHeader(value = "X-Worker-Id", required = false) String headerWorkerId,
+                                       @RequestHeader(value = "X-Worker-Secret", required = false) String secret) {
+        if (!isWorker(headerWorkerId, secret)) return forbidden("Worker 身份校验失败");
+        service.requireTaskOwner(taskId, headerWorkerId);
+        return ResponseEntity.ok(Map.of("status", service.task(taskId).status()));
+    }
+
     @PostMapping("/worker/tasks/{taskId}/events")
     ResponseEntity<?> workerEvent(@PathVariable String taskId, @Valid @RequestBody AgentEvent event,
                                   @RequestHeader(value = "X-Worker-Id", required = false) String headerWorkerId,
@@ -99,13 +118,23 @@ class ApiController {
         return ResponseEntity.ok().build();
     }
 
-    @PostMapping("/worker/tasks/{taskId}/complete")
-    ResponseEntity<?> complete(@PathVariable String taskId, @RequestBody CompleteTaskRequest request,
+    @PostMapping("/worker/tasks/{taskId}/run-events")
+    ResponseEntity<?> runEvent(@PathVariable String taskId, @Valid @RequestBody RunEventRequest event,
                                @RequestHeader(value = "X-Worker-Id", required = false) String headerWorkerId,
                                @RequestHeader(value = "X-Worker-Secret", required = false) String secret) {
         if (!isWorker(headerWorkerId, secret)) return forbidden("Worker 身份校验失败");
         service.requireTaskOwner(taskId, headerWorkerId);
-        return ResponseEntity.ok(service.complete(taskId, request));
+        service.appendRunEvent(taskId, headerWorkerId, event);
+        return ResponseEntity.accepted().build();
+    }
+
+    @PostMapping("/worker/tasks/{taskId}/complete")
+    ResponseEntity<?> complete(@PathVariable String taskId, @Valid @RequestBody CompleteTaskRequest request,
+                               @RequestHeader(value = "X-Worker-Id", required = false) String headerWorkerId,
+                               @RequestHeader(value = "X-Worker-Secret", required = false) String secret) {
+        if (!isWorker(headerWorkerId, secret)) return forbidden("Worker 身份校验失败");
+        service.requireTaskOwner(taskId, headerWorkerId);
+        return ResponseEntity.ok(service.complete(taskId, headerWorkerId, request));
     }
 
     @PostMapping("/worker/tasks/{taskId}/fail")
@@ -114,7 +143,7 @@ class ApiController {
                            @RequestHeader(value = "X-Worker-Secret", required = false) String secret) {
         if (!isWorker(headerWorkerId, secret)) return forbidden("Worker 身份校验失败");
         service.requireTaskOwner(taskId, headerWorkerId);
-        return ResponseEntity.ok(service.fail(taskId, request));
+        return ResponseEntity.ok(service.fail(taskId, headerWorkerId, request));
     }
 
     @PostMapping(value = "/worker/tasks/{taskId}/artifacts", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

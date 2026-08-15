@@ -1,28 +1,41 @@
 import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { platform, release } from 'node:os'
-import { basename, join, relative, resolve } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { createAgentAdapter } from './agent/factory.js'
 import type { AgentEvent, AgentRunResult } from './agent/types.js'
+import { createTestExecutorRegistry, parseTestExecutionConfig } from './executors/index.js'
 import { buildKnowledgeContext, collectKnowledgeRefs, resolveKnowledgeRoots } from './knowledge.js'
-import type { RoutingDecision, TestCase } from './router.js'
-import { decideLayer, routeCases } from './router.js'
-import { computeMetrics, countAssertionFiles, resolveBundledPlaywrightCli, runApiCases, runMavenUnitTests, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
+import { createWorkerPluginRuntime, parsePluginPolicyConfig, type VerificationCheck } from './plugins/index.js'
+import type { MavenTestInput, MavenTestOutput } from './plugins/maven-test.js'
+import type { QualityGateInput, QualityGateOutput } from './plugins/quality-gate.js'
+import type { TestPlanInput, TestPlanOutput } from './plugins/test-plan.js'
+import { computeMetrics, countAssertionFiles, resolveBundledPlaywrightCli, runApiCases, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
 import type { ApiCaseOutcome } from './validator.js'
 import type { TaskInput } from '../../../contracts/src/contracts.js'
+import { RunEventStore, type RunEvent } from './run-events.js'
+import { authorizeProjectPath, parseAllowedProjectRoots } from './security.js'
 
 interface ClaimedTask { taskId: string; input: TaskInput }
 
 const server = (process.env.TEST_AGENT_SERVER_URL ?? 'http://127.0.0.1:8088').replace(/\/$/, '')
+const workerApiToken = process.env.TEST_AGENT_WORKER_API_TOKEN ?? process.env.TEST_AGENT_API_TOKEN
 const dataDirectory = resolve(process.env.TEST_AGENT_WORKER_DATA_DIR ?? join(process.cwd(), '.test-agent-worker'))
 const capabilities = (process.env.TEST_AGENT_WORKER_CAPABILITIES ?? 'windows,node,codex-cli,go,java,vue,playwright').split(',').map((value) => value.trim()).filter(Boolean)
+const allowedProjectRoots = parseAllowedProjectRoots(process.env.TEST_AGENT_ALLOWED_PROJECT_ROOTS)
+const pluginPolicyOverrides = parsePluginPolicyConfig(process.env.TEST_AGENT_PLUGIN_POLICY_JSON)
+createWorkerPluginRuntime(pluginPolicyOverrides)
+const testExecutionConfig = parseTestExecutionConfig()
+createTestExecutorRegistry(testExecutionConfig)
+if (testExecutionConfig.mode === 'docker' && !capabilities.includes('docker')) throw new Error('Docker execution mode requires docker Worker capability')
 mkdirSync(dataDirectory, { recursive: true })
 const idPath = join(dataDirectory, 'worker-id.txt')
 const workerId = existsSync(idPath) ? readFileSync(idPath, 'utf8').trim() : randomUUID()
 if (!existsSync(idPath)) writeFileSync(idPath, workerId, 'utf8')
 const secretPath = join(dataDirectory, 'worker-secret.txt')
 let workerSecret = existsSync(secretPath) ? readFileSync(secretPath, 'utf8').trim() : ''
+if (existsSync(secretPath)) chmodSync(secretPath, 0o600)
 const workerName = process.env.TEST_AGENT_WORKER_NAME ?? `${process.env.COMPUTERNAME ?? 'worker'}-${workerId.slice(0, 8)}`
 let stopping = false
 
@@ -31,7 +44,8 @@ const TOOL_CHECKS: Record<string, { command: string; args: string[] }> = {
   java: { command: 'java', args: ['-version'] },
   go: { command: 'go', args: ['version'] },
   codex: { command: process.platform === 'win32' ? 'codex.cmd' : 'codex', args: ['--version'] },
-  playwright: { command: 'node', args: [resolveBundledPlaywrightCli(), '--version'] }
+  playwright: { command: 'node', args: [resolveBundledPlaywrightCli(), '--version'] },
+  docker: { command: 'docker', args: ['version'] }
 }
 
 function toolVersion(command: string, args: string[]): string | null {
@@ -54,17 +68,21 @@ interface PreflightResult {
 function preflightEnvironment(input: TaskInput, provider: string): PreflightResult {
   const issues: string[] = []
   const details: string[] = []
-  try {
-    if (!statSync(input.projectPath).isDirectory()) issues.push(`项目路径不是目录：${input.projectPath}`)
-  } catch {
-    issues.push(`项目路径不存在：${input.projectPath}`)
-  }
+  const authorization = authorizeProjectPath(input.projectPath, allowedProjectRoots)
+  if (!authorization.ok) issues.push(authorization.reason ?? 'Project path authorization failed')
+  else if (!statSync(authorization.resolvedPath!).isDirectory()) issues.push(`项目路径不是目录：${input.projectPath}`)
   for (const capability of input.requiredCapabilities ?? []) {
+    if (capability === 'java' && testExecutionConfig.mode === 'docker') continue
     const check = TOOL_CHECKS[capability]
     if (!check) continue
     const version = toolVersion(check.command, check.args)
     if (version) details.push(`${capability} ${version}`)
     else issues.push(`缺少工具链：${capability}`)
+  }
+  if (testExecutionConfig.mode === 'docker') {
+    const version = toolVersion(TOOL_CHECKS.docker.command, TOOL_CHECKS.docker.args)
+    if (version) details.push(`docker ${version}`)
+    else issues.push('Docker execution mode requires a reachable Docker Engine')
   }
   const summary = [`os=${platform()} ${release()}`, `node=${process.version}`, `provider=${provider}`, `worker=${workerName}`, ...details].join(' | ')
   return { ok: issues.length === 0, issues, summary }
@@ -75,8 +93,7 @@ function workerHeaders(): Record<string, string> {
 }
 
 async function request<T>(path: string, init?: RequestInit, extraHeaders?: Record<string, string>): Promise<T> {
-  const token = process.env.TEST_AGENT_API_TOKEN
-  const response = await fetch(`${server}${path}`, { ...init, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(extraHeaders ?? {}), ...(init?.headers ?? {}) } })
+  const response = await fetch(`${server}${path}`, { ...init, headers: { 'content-type': 'application/json', ...(workerApiToken ? { authorization: `Bearer ${workerApiToken}` } : {}), ...(extraHeaders ?? {}), ...(init?.headers ?? {}) } })
   if (!response.ok) throw new Error(`${init?.method ?? 'GET'} ${path} failed: ${response.status} ${await response.text()}`)
   if (response.status === 204) return undefined as T
   const text = await response.text()
@@ -84,10 +101,11 @@ async function request<T>(path: string, init?: RequestInit, extraHeaders?: Recor
 }
 
 async function register(): Promise<void> {
-  const response = await request<{ secret?: string }>('/api/workers/register', { method: 'POST', body: JSON.stringify({ id: workerId, name: workerName, capabilities }) })
+  const response = await request<{ secret?: string }>('/api/workers/register', { method: 'POST', body: JSON.stringify({ id: workerId, name: workerName, capabilities }) }, workerSecret ? workerHeaders() : undefined)
   if (response.secret) {
     workerSecret = response.secret
-    writeFileSync(secretPath, workerSecret, 'utf8')
+    writeFileSync(secretPath, workerSecret, { encoding: 'utf8', mode: 0o600 })
+    chmodSync(secretPath, 0o600)
   }
   console.log(`Worker ${workerName} registered at ${server}`)
 }
@@ -100,21 +118,37 @@ async function emitStage(taskId: string, stage: string): Promise<void> {
   await emit(taskId, { level: 'info', message: `进入阶段：${stage}`, stage })
 }
 
+async function uploadRunEvent(taskId: string, event: RunEvent): Promise<void> {
+  await request(`/api/worker/tasks/${taskId}/run-events`, { method: 'POST', body: JSON.stringify(event) }, workerHeaders())
+}
+
 async function uploadArtifacts(task: ClaimedTask, result: AgentRunResult): Promise<void> {
   for (const artifact of result.artifacts) {
     const absolute = resolve(task.input.projectPath, artifact)
     const root = resolve(task.input.projectPath)
-    if (!absolute.startsWith(`${root}\\`) || !existsSync(absolute)) continue
+    const withinRoot = relative(root, absolute)
+    if (withinRoot.startsWith('..') || isAbsolute(withinRoot) || !existsSync(absolute)) continue
     const form = new FormData()
     form.append('file', new Blob([readFileSync(absolute)]), basename(absolute))
-    const token = process.env.TEST_AGENT_API_TOKEN
-    const response = await fetch(`${server}/api/worker/tasks/${task.taskId}/artifacts`, { method: 'POST', body: form, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...workerHeaders() } })
+    const response = await fetch(`${server}/api/worker/tasks/${task.taskId}/artifacts`, { method: 'POST', body: form, headers: { ...(workerApiToken ? { authorization: `Bearer ${workerApiToken}` } : {}), ...workerHeaders() } })
     if (!response.ok) throw new Error(`Artifact upload failed: ${response.status} ${await response.text()}`)
   }
 }
 
 async function runTask(task: ClaimedTask): Promise<void> {
   const adapter = createAgentAdapter()
+  const pluginRuntime = createWorkerPluginRuntime(pluginPolicyOverrides)
+  const executors = createTestExecutorRegistry(testExecutionConfig)
+  const runEvents = new RunEventStore(task.input.projectPath, task.taskId)
+  let eventUpload = Promise.resolve()
+  let eventUploadFailure: unknown
+  runEvents.subscribe((event) => {
+    eventUpload = eventUpload.then(async () => {
+      if (eventUploadFailure !== undefined) return
+      try { await uploadRunEvent(task.taskId, event) } catch (error) { eventUploadFailure = error }
+    })
+  })
+  runEvents.append('run/started', { workerId, requestedTestTypes: task.input.testTypes })
   if (!adapter) throw new Error('No executable Agent Provider is configured')
   const preflight = preflightEnvironment(task.input, adapter.name)
   if (!preflight.ok) {
@@ -139,37 +173,47 @@ async function runTask(task: ClaimedTask): Promise<void> {
   const controller = new AbortController()
   const heartbeat = setInterval(() => {
     void request(`/api/worker/tasks/${task.taskId}/heartbeat?workerId=${encodeURIComponent(workerId)}`, { method: 'POST' }, workerHeaders()).catch(console.error)
-    void request<{ status: string }>(`/api/tasks/${task.taskId}`).then((state) => { if (state.status === 'CANCELLED') controller.abort() }).catch(console.error)
+    void request<{ status: string }>(`/api/worker/tasks/${task.taskId}/status`, undefined, workerHeaders()).then((state) => { if (state.status === 'CANCELLED') controller.abort() }).catch(console.error)
   }, 15_000)
   try {
     await emit(task.taskId, { level: 'info', message: `Worker使用 ${adapter.name} 执行真实测试` })
     await emitStage(task.taskId, 'GENERATING')
+    runEvents.append('agent/started', { provider: adapter.name })
     const result = await adapter.run(task.input, (event) => { void emit(task.taskId, event).catch(console.error) }, controller.signal, { knowledge: buildKnowledgeContext(knowledge) })
-    const capabilities = task.input.requiredCapabilities ?? []
-    const rawCases = Array.isArray((result as unknown as { cases?: unknown }).cases) ? (result as unknown as { cases: TestCase[] }).cases : []
-    let casesMeta: { count: number; byLayer: Record<string, number>; byPriority: Record<string, number> } | null = null
-    let routing: RoutingDecision[] = []
+    runEvents.append('agent/completed', { provider: adapter.name, lanes: result.lanes.length, artifacts: result.artifacts.length })
+    const executionCapabilities = task.input.requiredCapabilities && task.input.requiredCapabilities.length > 0
+      ? task.input.requiredCapabilities
+      : capabilities
+    const pluginContext = {
+      projectPath: task.input.projectPath,
+      executionId: task.taskId,
+      capabilities: executionCapabilities,
+      executors,
+      events: runEvents,
+      signal: controller.signal,
+      emit: (event: AgentEvent) => emit(task.taskId, event)
+    }
+    const plan = await pluginRuntime.execute<'test_plan', TestPlanInput, TestPlanOutput>(
+      'test_plan',
+      pluginContext,
+      { cases: result.cases }
+    )
+    result.artifacts = [...result.artifacts, ...plan.artifacts]
+    const auditArtifact = pluginRuntime.auditArtifact(pluginContext)
+    if (!result.artifacts.includes(auditArtifact)) result.artifacts.push(auditArtifact)
+    await emit(task.taskId, {
+      level: plan.degraded ? 'warning' : 'success',
+      message: plan.degraded
+        ? `测试计划降级：${plan.issues.join('；')}`
+        : `测试计划 ${plan.meta.count} 条（按层 ${JSON.stringify(plan.meta.byLayer)}，按价值 ${JSON.stringify(plan.meta.byPriority)}）`
+    })
+
     let apiResult: ApiCaseOutcome | null = null
-    if (rawCases.length > 0) {
-      const casesDir = join(task.input.projectPath, '.test-agent', 'cases')
-      mkdirSync(casesDir, { recursive: true })
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-      const casesPath = join(casesDir, `cases-${stamp}.json`)
-      writeFileSync(casesPath, JSON.stringify(rawCases, null, 2), 'utf8')
-      routing = routeCases(rawCases, capabilities)
-      writeFileSync(join(casesDir, `routing-${stamp}.json`), JSON.stringify(routing, null, 2), 'utf8')
-      const byLayer: Record<string, number> = {}
-      const byPriority: Record<string, number> = {}
-      for (const caseItem of rawCases) {
-        const layer = decideLayer(caseItem)
-        byLayer[layer] = (byLayer[layer] ?? 0) + 1
-        byPriority[caseItem.priority] = (byPriority[caseItem.priority] ?? 0) + 1
-      }
-      casesMeta = { count: rawCases.length, byLayer, byPriority }
-      const apiCases = routing
+    if (plan.cases.length > 0) {
+      const apiCases = plan.routing
         .filter((item) => item.layer === 'api' && !item.skipped)
-        .map((item) => rawCases.find((caseItem) => caseItem.id === item.caseId))
-        .filter((caseItem): caseItem is TestCase => Boolean(caseItem))
+        .map((item) => plan.cases.find((caseItem) => caseItem.id === item.caseId))
+        .filter((caseItem): caseItem is TestPlanOutput['cases'][number] => Boolean(caseItem))
       if (apiCases.length > 0) {
         const baseUrl = task.input.apiBaseUrl
         apiResult = baseUrl
@@ -180,99 +224,146 @@ async function runTask(task: ClaimedTask): Promise<void> {
           message: `API 用例执行：${apiResult.pass} 通过 / ${apiResult.fail} 失败 / ${apiResult.skipped} 跳过`
         })
       }
-      result.artifacts = [...result.artifacts, relative(task.input.projectPath, casesPath), relative(task.input.projectPath, join(casesDir, `routing-${stamp}.json`))]
-      await emit(task.taskId, {
-        level: 'info',
-        message: `用例清单 ${rawCases.length} 条（按层 ${JSON.stringify(byLayer)}，按价值 ${JSON.stringify(byPriority)}），智能分流完成`
-      })
     }
+
+    const mavenRequired = executionCapabilities.includes('java') && (task.input.testTypes.includes('unit') || task.input.testTypes.includes('regression'))
+    const mavenOutcome = await pluginRuntime.execute<'maven_test', MavenTestInput, MavenTestOutput>(
+      'maven_test',
+      pluginContext,
+      { required: mavenRequired }
+    )
+    if (mavenOutcome.artifact && !result.artifacts.includes(mavenOutcome.artifact)) result.artifacts.push(mavenOutcome.artifact)
     const unitOutcome = task.input.testTypes.includes('unit')
-      ? capabilities.includes('java')
-        ? runMavenUnitTests(task.input.projectPath)
-        : capabilities.includes('node')
+      ? executionCapabilities.includes('java')
+        ? mavenOutcome
+        : executionCapabilities.includes('node')
           ? runNodeUnitTests(task.input.projectPath)
           : null
       : null
-    const uiOutcome = task.input.testTypes.includes('ui') && capabilities.includes('playwright')
+    const uiOutcome = task.input.testTypes.includes('ui') && executionCapabilities.includes('playwright')
       ? runPlaywrightUiTests(task.input.projectPath)
       : null
-    const regressionTool = capabilities.includes('java') ? 'java' : capabilities.includes('node') ? 'node' : null
+    const regressionTool = executionCapabilities.includes('java') ? 'java' : executionCapabilities.includes('node') ? 'node' : null
     const regressionOutcome = task.input.testTypes.includes('regression') && regressionTool
-      ? (unitOutcome ?? (regressionTool === 'java' ? runMavenUnitTests(task.input.projectPath) : runNodeUnitTests(task.input.projectPath)))
+      ? (regressionTool === 'java' ? mavenOutcome : (unitOutcome ?? runNodeUnitTests(task.input.projectPath)))
       : null
-    if (unitOutcome || uiOutcome || regressionOutcome) {
-      await emitStage(task.taskId, 'VALIDATING')
-      const baseOutcome = (unitOutcome ?? uiOutcome)!
-      const assertions = countAssertionFiles(task.input.projectPath)
-      const metrics = computeMetrics(baseOutcome, assertions)
-      const knowledgeRate = knowledge.degraded ? 0 : Math.min(1, knowledge.refs.length / Math.max(assertions.total, 1))
-      const totalFail = (unitOutcome?.fail ?? 0) + (uiOutcome?.fail ?? 0) + (regressionOutcome?.fail ?? 0) + (apiResult?.fail ?? 0)
-      const totalPass = (unitOutcome?.pass ?? 0) + (uiOutcome?.pass ?? 0) + (regressionOutcome?.pass ?? 0) + (apiResult?.pass ?? 0)
-      const compileError = unitOutcome?.compileError === true || regressionOutcome?.compileError === true
-      if (totalFail > 0 || compileError) {
-        throw new Error(`独立验证未通过：${totalFail} 个测试失败${compileError ? '，存在编译错误' : ''}`)
-      }
-      if (result.report.passed !== totalPass || result.report.failed !== totalFail) {
-        await emit(task.taskId, {
-          level: 'warning',
-          message: `独立验证与 Agent 报告不一致（Agent ${result.report.passed}/${result.report.failed}，独立 ${totalPass}/${totalFail}），以独立验证为准`
-        })
-      }
-      const lanes = result.lanes.map((lane) => {
-        if (lane.type === 'unit' && unitOutcome) {
-          return { ...lane, summary: `${lane.summary}（独立验证 ${unitOutcome.pass} 通过 / ${unitOutcome.fail} 失败，覆盖率 ${unitOutcome.coverage ?? 'N/A'}%）` }
-        }
-        if (lane.type === 'ui' && uiOutcome) {
-          return { ...lane, summary: `${lane.summary}（Playwright 独立验证 ${uiOutcome.pass} 通过 / ${uiOutcome.fail} 失败）` }
-        }
-        if (lane.type === 'regression' && regressionOutcome) {
-          return { ...lane, summary: `${lane.summary}（回归独立验证：全量套件 ${regressionOutcome.pass} 通过 / ${regressionOutcome.fail} 失败）` }
-        }
-        return lane
-      })
-      const coverage = unitOutcome?.coverage ?? null
-      const coverageTarget = task.input.coverageTarget ?? 60
-      const coveragePassed = coverage === null
-        ? true
-        : coverage >= coverageTarget
-      const gate = {
-        coverageTarget,
-        coverage,
-        effectiveRate: metrics.effectiveRate,
-        passed: coveragePassed,
-        reason: coverage === null
-          ? '未取得覆盖率数据，覆盖率门禁跳过（需配置覆盖率工具）'
-          : coveragePassed
-            ? '覆盖率达标'
-            : `覆盖率 ${coverage}% 未达到目标 ${coverageTarget}%`
-      }
-      const report = {
-        ...result.report,
-        passed: totalPass,
-        failed: totalFail,
-        coverage,
-        metrics: { ...metrics, knowledgeRate },
-        gate,
-        knowledge: knowledgeMeta,
-        lanes,
-        cases: casesMeta,
-        routing,
-        api: apiResult
-      }
-      await emitStage(task.taskId, 'ANALYZING')
-      await emit(task.taskId, {
-        level: coveragePassed ? 'success' : 'warning',
-        message: `覆盖率门禁：${gate.reason}；四率=编译${Math.round(metrics.compileRate * 100)}% 执行${Math.round(metrics.execRate * 100)}% 断言${Math.round(metrics.assertRate * 100)}% 有效${Math.round(metrics.effectiveRate * 100)}%`
-      })
-      await uploadArtifacts(task, result)
-      await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report, lanes, gate } }) }, workerHeaders())
-    } else {
-      if (apiResult && !apiResult.ok) throw new Error(`API 用例执行未通过：${apiResult.fail} 个失败`)
-      const report = { ...result.report, knowledge: knowledgeMeta, lanes: result.lanes, cases: casesMeta, routing, api: apiResult }
-      await uploadArtifacts(task, result)
-      await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report } }) }, workerHeaders())
+
+    await emitStage(task.taskId, 'VALIDATING')
+    const uniqueOutcomes = [...new Set([unitOutcome, uiOutcome, regressionOutcome].filter((outcome) => outcome !== null))]
+    const baseOutcome = uniqueOutcomes[0] ?? {
+      ok: apiResult?.ok ?? true,
+      tests: (apiResult?.pass ?? 0) + (apiResult?.fail ?? 0),
+      pass: apiResult?.pass ?? 0,
+      fail: apiResult?.fail ?? 0,
+      coverage: null,
+      compileError: false,
+      raw: ''
     }
+    const assertions = countAssertionFiles(task.input.projectPath)
+    const metrics = computeMetrics(baseOutcome, assertions)
+    const knowledgeRate = knowledge.degraded ? 0 : Math.min(1, knowledge.refs.length / Math.max(assertions.total, 1))
+    const totalFail = uniqueOutcomes.reduce((sum, outcome) => sum + outcome.fail, 0) + (apiResult?.fail ?? 0)
+    const totalPass = uniqueOutcomes.reduce((sum, outcome) => sum + outcome.pass, 0) + (apiResult?.pass ?? 0)
+    if (result.report.passed !== totalPass || result.report.failed !== totalFail) {
+      await emit(task.taskId, {
+        level: 'warning',
+        message: `独立验证与 Agent 报告不一致（Agent ${result.report.passed}/${result.report.failed}，独立 ${totalPass}/${totalFail}），以独立验证为准`
+      })
+    }
+
+    const lanes = result.lanes.map((lane) => {
+      if (lane.type === 'unit' && unitOutcome) {
+        return { ...lane, summary: `${lane.summary}（独立验证 ${unitOutcome.pass} 通过 / ${unitOutcome.fail} 失败，覆盖率 ${unitOutcome.coverage ?? 'N/A'}%）` }
+      }
+      if (lane.type === 'ui' && uiOutcome) {
+        return { ...lane, summary: `${lane.summary}（Playwright 独立验证 ${uiOutcome.pass} 通过 / ${uiOutcome.fail} 失败）` }
+      }
+      if (lane.type === 'regression' && regressionOutcome) {
+        return { ...lane, summary: `${lane.summary}（回归独立验证：全量套件 ${regressionOutcome.pass} 通过 / ${regressionOutcome.fail} 失败）` }
+      }
+      return lane
+    })
+
+    const checks: VerificationCheck[] = [
+      {
+        name: 'maven_test',
+        required: mavenRequired,
+        executed: mavenOutcome.executed,
+        ok: mavenOutcome.ok,
+        tests: mavenOutcome.tests,
+        pass: mavenOutcome.pass,
+        fail: mavenOutcome.fail,
+        compileError: mavenOutcome.compileError,
+        exitCode: mavenOutcome.exitCode,
+        signal: mavenOutcome.signal,
+        timedOut: mavenOutcome.timedOut,
+        aborted: mavenOutcome.aborted,
+        outputTruncated: mavenOutcome.outputTruncated
+      },
+      {
+        name: 'node_test',
+        required: !executionCapabilities.includes('java') && executionCapabilities.includes('node') && (task.input.testTypes.includes('unit') || task.input.testTypes.includes('regression')),
+        executed: Boolean((unitOutcome || regressionOutcome) && !executionCapabilities.includes('java')),
+        ok: executionCapabilities.includes('java') ? true : (unitOutcome ?? regressionOutcome)?.ok ?? true,
+        tests: executionCapabilities.includes('java') ? 0 : (unitOutcome ?? regressionOutcome)?.tests ?? 0,
+        pass: executionCapabilities.includes('java') ? 0 : (unitOutcome ?? regressionOutcome)?.pass ?? 0,
+        fail: executionCapabilities.includes('java') ? 0 : (unitOutcome ?? regressionOutcome)?.fail ?? 0,
+        compileError: executionCapabilities.includes('java') ? false : (unitOutcome ?? regressionOutcome)?.compileError ?? false
+      },
+      {
+        name: 'playwright_test',
+        required: task.input.testTypes.includes('ui'),
+        executed: uiOutcome !== null,
+        ok: uiOutcome?.ok ?? true,
+        tests: uiOutcome?.tests ?? 0,
+        pass: uiOutcome?.pass ?? 0,
+        fail: uiOutcome?.fail ?? 0,
+        compileError: uiOutcome?.compileError ?? false
+      },
+      {
+        name: 'api_test',
+        required: plan.routing.some((item) => item.layer === 'api'),
+        executed: apiResult !== null,
+        ok: apiResult?.ok ?? true,
+        tests: (apiResult?.pass ?? 0) + (apiResult?.fail ?? 0),
+        pass: apiResult?.pass ?? 0,
+        fail: apiResult?.fail ?? 0,
+        compileError: false
+      }
+    ]
+    const coverage = unitOutcome?.coverage ?? null
+    const gate = await pluginRuntime.execute<'quality_gate', QualityGateInput, QualityGateOutput>(
+      'quality_gate',
+      pluginContext,
+      { plan, checks, coverageTarget: task.input.coverageTarget ?? 60, coverage, metrics }
+    )
+    runEvents.append('quality-gate/decided', { passed: gate.passed, reasons: gate.reasons, checks: gate.checks })
+    const report = {
+      ...result.report,
+      passed: totalPass,
+      failed: totalFail,
+      coverage,
+      metrics: { ...metrics, knowledgeRate },
+      gate,
+      knowledge: knowledgeMeta,
+      lanes,
+      cases: plan.meta,
+      routing: plan.routing,
+      api: apiResult
+    }
+    await emitStage(task.taskId, 'ANALYZING')
+    await emit(task.taskId, {
+      level: gate.passed ? 'success' : 'warning',
+      message: `质量门禁：${gate.reason}；四率=编译${Math.round(metrics.compileRate * 100)}% 执行${Math.round(metrics.execRate * 100)}% 断言${Math.round(metrics.assertRate * 100)}% 有效${Math.round(metrics.effectiveRate * 100)}%`
+    })
+    runEvents.append('run/result-ready', { gatePassed: gate.passed, passed: totalPass, failed: totalFail })
+    await eventUpload
+    if (eventUploadFailure !== undefined) throw new Error('中央运行事件上送失败', { cause: eventUploadFailure })
+    await uploadArtifacts(task, result)
+    await request(`/api/worker/tasks/${task.taskId}/complete`, { method: 'POST', body: JSON.stringify({ result: { ...result, report, lanes, gate } }) }, workerHeaders())
   } catch (error) {
+    runEvents.append('run/ended', { status: controller.signal.aborted ? 'cancelled' : 'failed', error: error instanceof Error ? error.message : String(error) })
+    await eventUpload
     if (!controller.signal.aborted) {
       await request(`/api/worker/tasks/${task.taskId}/fail`, { method: 'POST', body: JSON.stringify({ error: error instanceof Error ? error.message : 'Worker execution failed' }) }, workerHeaders())
     }

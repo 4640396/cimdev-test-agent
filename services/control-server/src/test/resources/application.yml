@@ -7,6 +7,15 @@ spring:
     enabled: true
 test-agent:
   api-token: test-token
+  role-tokens: admin=admin-token;operator=operator-token;viewer=viewer-token;worker=worker-token
   storage-root: ${java.io.tmpdir}/cimdev-test-agent-test
   task-lease-seconds: 60
   scheduler-delay-ms: 3600000
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,runtimeReadiness,db

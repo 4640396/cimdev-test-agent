@@ -42,7 +42,13 @@ final class ApiModels {
     record AgentEvent(@NotBlank String level, @NotBlank String message, String stage) {
         AgentEvent(String level, String message) { this(level, message, null); }
     }
-    record CompleteTaskRequest(JsonNode result) {}
+    record RunEventRequest(@Min(1) int schemaVersion, @NotBlank String executionId,
+                           @jakarta.validation.constraints.Positive long sequence,
+                           @jakarta.validation.constraints.NotNull Instant timestamp,
+                           @NotBlank String type, @jakarta.validation.constraints.NotNull JsonNode data) {}
+    record RunEventView(int schemaVersion, String executionId, long sequence, Instant timestamp,
+                        String type, JsonNode data, String workerId, Instant receivedAt) {}
+    record CompleteTaskRequest(@jakarta.validation.constraints.NotNull JsonNode result) {}
     record FailTaskRequest(@NotBlank String error) {}
     record ScheduleRequest(String id, @NotBlank String projectId, @Min(1) int intervalMinutes, boolean enabled) {}
     record ScheduleView(String id, String projectId, int intervalMinutes, boolean enabled, Instant nextRunAt, Instant createdAt, Instant updatedAt) {}

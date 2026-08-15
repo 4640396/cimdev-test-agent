@@ -16,6 +16,7 @@ export interface AgentRunResult {
   lanes: AgentLaneResult[]
   report: { passed: number; failed: number; coverage: number | null }
   artifacts: string[]
+  cases?: unknown[]
 }
 
 export interface AgentAdapter {

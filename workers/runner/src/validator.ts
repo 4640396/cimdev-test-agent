@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { TestCase } from './router.js'
@@ -33,10 +33,27 @@ export interface MavenTestOutcome {
   coverage: number | null
   compileError: boolean
   raw: string
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  timedOut: boolean
+  aborted: boolean
+  outputTruncated: boolean
+}
+
+export interface MavenCommandSpec {
+  command: string
+  args: string[]
+  cwd: string
 }
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.test-agent', 'out', 'dist', '.test-agent-worker', 'legacy', 'target'])
 const ASSERTION_PATTERN = /\b(assert|expect|should|deepStrictEqual|strictEqual|equal|Assertions|assertThat|verify|Assert\.)\b/
+const SENSITIVE_ENV_NAME = /(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH)/i
+
+/** Preserve toolchain environment while removing credentials owned by the Worker process. */
+export function scrubExecutionEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(source).filter(([name, value]) => value !== undefined && !SENSITIVE_ENV_NAME.test(name)))
+}
 
 function matchNumber(lines: string[], pattern: RegExp): number {
   for (const line of lines) {
@@ -83,12 +100,50 @@ export function parseSurefireSummary(content: string): { tests: number; fail: nu
 }
 
 /** 独立重跑 Maven 单元测试，从 surefire 报告解析结果（覆盖率未配置时为 null）。 */
-export function runMavenUnitTests(projectPath: string): MavenTestOutcome {
-  // Windows 下 node 不能直接 spawn .cmd（EINVAL），需经 cmd /c 调用
-  const result = process.platform === 'win32'
-    ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'mvn test'], { cwd: projectPath, encoding: 'utf8', timeout: 300_000, windowsHide: true })
-    : spawnSync('mvn', ['test'], { cwd: projectPath, encoding: 'utf8', timeout: 300_000 })
-  const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
+export async function runMavenUnitTests(projectPath: string, signal?: AbortSignal): Promise<MavenTestOutcome> {
+  return runMavenCommand(projectPath, mavenCommandSpec(projectPath), signal)
+}
+
+export function mavenCommandSpec(projectPath: string, platform: NodeJS.Platform = process.platform): MavenCommandSpec {
+  return platform === 'win32'
+    ? { command: 'cmd.exe', args: ['/d', '/s', '/c', 'mvn.cmd test'], cwd: projectPath }
+    : { command: 'mvn', args: ['test'], cwd: projectPath }
+}
+
+/** Execute one Maven command and normalize process, Surefire and cancellation outcomes. */
+export async function runMavenCommand(projectPath: string, spec: MavenCommandSpec, signal?: AbortSignal): Promise<MavenTestOutcome> {
+  signal?.throwIfAborted()
+  const MAX_OUTPUT = 1_000_000
+  let raw = ''
+  let outputTruncated = false
+  const append = (chunk: Buffer): void => {
+    raw += chunk.toString('utf8')
+    if (raw.length > MAX_OUTPUT) {
+      raw = raw.slice(-MAX_OUTPUT)
+      outputTruncated = true
+    }
+  }
+  const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: scrubExecutionEnvironment(), windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
+  child.stdout.on('data', append)
+  child.stderr.on('data', append)
+  let aborted = false
+  const abort = (): void => {
+    aborted = true
+    if (child.pid === undefined) return
+    if (process.platform === 'win32') {
+      const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      killer.on('error', () => { child.kill('SIGKILL') })
+    } else {
+      try { process.kill(-child.pid, 'SIGTERM') } catch { child.kill('SIGTERM') }
+    }
+  }
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) abort()
+  const settled = await new Promise<{ exitCode: number | null; exitSignal: NodeJS.Signals | null; spawnError?: Error }>((resolve) => {
+    child.once('error', (spawnError) => resolve({ exitCode: null, exitSignal: null, spawnError }))
+    child.once('close', (exitCode, exitSignal) => resolve({ exitCode, exitSignal }))
+  }).finally(() => signal?.removeEventListener('abort', abort))
+  if (settled.spawnError) throw settled.spawnError
   let tests = 0
   let pass = 0
   let fail = 0
@@ -106,8 +161,21 @@ export function runMavenUnitTests(projectPath: string): MavenTestOutcome {
   } catch {
     // 无 surefire 报告（无测试或构建失败）
   }
-  const compileError = result.status !== 0 && /BUILD FAILURE/.test(raw)
-  return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError, raw }
+  const compileError = settled.exitCode !== 0 && /BUILD FAILURE/.test(raw)
+  return {
+    ok: settled.exitCode === 0 && !aborted,
+    tests,
+    pass,
+    fail,
+    coverage: null,
+    compileError,
+    raw,
+    exitCode: settled.exitCode,
+    signal: settled.exitSignal,
+    timedOut: signal?.reason instanceof Error && (signal.reason.name === 'TimeoutError' || /timed?\s*out|timeout/i.test(signal.reason.message)),
+    aborted,
+    outputTruncated
+  }
 }
 
 export interface ApiCaseOutcome {

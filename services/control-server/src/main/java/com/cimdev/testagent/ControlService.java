@@ -50,6 +50,7 @@ class ControlService {
         var project = new ProjectView(request.id() == null ? UUID.randomUUID().toString() : request.id(), request.name(), request.projectPath(),
                 request.defaultVersion() == null ? "" : request.defaultVersion(), request.defaultTestTypes(), existing.map(ProjectView::createdAt).orElse(now), now);
         store.saveProject(project);
+        audit(currentActor(), existing.isPresent() ? "project.update" : "project.create", null, "project=" + project.id());
         return project;
     }
 
@@ -129,7 +130,7 @@ class ControlService {
     TaskView cancel(String id) {
         if (store.cancel(id)) {
             log(id, "warning", "任务已取消");
-            audit("api", "task.cancel", id, null);
+            audit(currentActor(), "task.cancel", id, null);
         }
         return task(id);
     }
@@ -139,14 +140,21 @@ class ControlService {
         return createTask(new CreateTaskRequest(old.projectId(), old.input(), "retry:" + id, "retry:" + id));
     }
 
-    WorkerRegisterResponse register(WorkerRegisterRequest request) {
+    WorkerRegisterResponse register(WorkerRegisterRequest request, String currentWorkerId, String currentSecret) {
         var worker = new WorkerView(request.id() == null ? UUID.randomUUID().toString() : request.id(), request.name(), request.capabilities(), "ONLINE", Instant.now());
         var secret = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "");
-        store.saveWorker(worker);
-        store.updateWorkerSecret(worker.id(), secretHash(worker.id(), secret));
-        audit("api", "worker.register", null, "worker=" + worker.id());
+        var newHash = secretHash(worker.id(), secret);
+        var rotated = worker.id().equals(currentWorkerId) && currentSecret != null
+                && store.rotateWorker(worker, secretHash(worker.id(), currentSecret), newHash);
+        if (!rotated && !store.insertWorker(worker, newHash)) {
+            throw new ForbiddenException("Existing worker identity requires its current secret for rotation");
+        }
+        audit(currentWorkerId == null ? currentActor() : "worker:" + worker.id(),
+                rotated ? "worker.rotate" : "worker.register", null, "worker=" + worker.id());
         return new WorkerRegisterResponse(worker.id(), worker.name(), worker.capabilities(), worker.status(), worker.lastHeartbeatAt(), secret);
     }
+
+    boolean workerExists(String id) { return id != null && store.workerExists(id); }
 
     boolean verifyWorkerSecret(String workerId, String secret) {
         return workerId != null && secret != null && store.verifyWorkerSecret(workerId, secretHash(workerId, secret));
@@ -163,7 +171,10 @@ class ControlService {
     Optional<ClaimedTask> claim(ClaimRequest request) {
         store.heartbeatWorker(request.workerId());
         var claimed = store.claim(request.workerId(), request.capabilities(), leaseSeconds);
-        claimed.ifPresent(task -> log(task.taskId(), "info", "Worker已领取任务：" + request.workerId()));
+        claimed.ifPresent(task -> {
+            log(task.taskId(), "info", "Worker已领取任务：" + request.workerId());
+            audit("worker:" + request.workerId(), "task.claim", task.taskId(), null);
+        });
         return claimed;
     }
 
@@ -177,18 +188,30 @@ class ControlService {
         log(taskId, event.level(), event.message());
     }
 
-    TaskView complete(String taskId, CompleteTaskRequest request) {
-        if (store.complete(taskId, request.result())) {
+    void appendRunEvent(String taskId, String workerId, RunEventRequest event) {
+        if (!taskId.equals(event.executionId())) throw new IllegalArgumentException("executionId必须等于taskId");
+        store.appendRunEvent(taskId, workerId, event);
+    }
+
+    List<RunEventView> runEvents(String taskId) {
+        task(taskId);
+        return store.runEvents(taskId);
+    }
+
+    TaskView complete(String taskId, String workerId, CompleteTaskRequest request) {
+        var completionHash = sha256(request.result().toString());
+        if (store.complete(taskId, request.result(), completionHash)) {
             log(taskId, "success", "Worker真实测试执行完成");
-            audit("worker", "task.complete", taskId, null);
+            audit("worker:" + workerId, "task.complete", taskId, null);
         }
         return task(taskId);
     }
 
-    TaskView fail(String taskId, FailTaskRequest request) {
-        store.fail(taskId, request.error());
-        log(taskId, "error", request.error());
-        audit("worker", "task.fail", taskId, request.error());
+    TaskView fail(String taskId, String workerId, FailTaskRequest request) {
+        if (store.fail(taskId, request.error())) {
+            log(taskId, "error", request.error());
+            audit("worker:" + workerId, "task.fail", taskId, request.error());
+        }
         return task(taskId);
     }
 
@@ -221,11 +244,16 @@ class ControlService {
         var schedule = new ScheduleView(request.id() == null ? UUID.randomUUID().toString() : request.id(), request.projectId(), request.intervalMinutes(), request.enabled(),
                 now.plusSeconds(request.intervalMinutes() * 60L), existing.map(ScheduleView::createdAt).orElse(now), now);
         store.saveSchedule(schedule);
+        audit(currentActor(), existing.isPresent() ? "schedule.update" : "schedule.create", null, "schedule=" + schedule.id());
         return schedule;
     }
 
     List<ScheduleView> schedules() { return store.schedules(); }
-    boolean deleteSchedule(String id) { return store.deleteSchedule(id); }
+    boolean deleteSchedule(String id) {
+        var deleted = store.deleteSchedule(id);
+        if (deleted) audit(currentActor(), "schedule.delete", null, "schedule=" + id);
+        return deleted;
+    }
 
     org.springframework.web.servlet.mvc.method.annotation.SseEmitter subscribe(String taskId) { return events.subscribe(taskId, task(taskId)); }
 
@@ -236,9 +264,10 @@ class ControlService {
         var now = Instant.now();
         for (var schedule : store.schedules()) {
             if (!schedule.enabled() || schedule.nextRunAt().isAfter(now)) continue;
-            createTask(new CreateTaskRequest(schedule.projectId(), null, "schedule:" + schedule.id()));
-            store.saveSchedule(new ScheduleView(schedule.id(), schedule.projectId(), schedule.intervalMinutes(), true,
-                    now.plusSeconds(schedule.intervalMinutes() * 60L), schedule.createdAt(), now));
+            var occurrence = "schedule:" + schedule.id() + ":" + schedule.nextRunAt();
+            createTask(new CreateTaskRequest(schedule.projectId(), null, "schedule:" + schedule.id(), occurrence));
+            store.advanceSchedule(schedule.id(), schedule.nextRunAt(),
+                    schedule.nextRunAt().plusSeconds(schedule.intervalMinutes() * 60L), now);
         }
     }
 
@@ -249,17 +278,29 @@ class ControlService {
     }
 
     private String actorFor(String triggerType) {
-        return switch (triggerType == null ? "manual" : triggerType) {
-            case "schedule" -> "schedule";
-            case "version-release" -> "webhook";
-            default -> "api";
-        };
+        var trigger = triggerType == null ? "manual" : triggerType;
+        if (trigger.startsWith("schedule:")) return "schedule";
+        if (trigger.equals("version-release")) return "webhook";
+        return currentActor();
+    }
+
+    private String currentActor() {
+        var attributes = RequestContextHolder.getRequestAttributes();
+        if (attributes instanceof ServletRequestAttributes requestAttributes) {
+            var role = requestAttributes.getRequest().getAttribute("test-agent.role");
+            if (role != null) return "role:" + role;
+        }
+        return "system";
     }
 
     private String secretHash(String workerId, String secret) {
+        return sha256(workerId + ":" + secret);
+    }
+
+    private String sha256(String value) {
         try {
             var digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest((workerId + ":" + secret).getBytes(StandardCharsets.UTF_8)));
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException error) {
             throw new IllegalStateException(error);
         }

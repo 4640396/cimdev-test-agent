@@ -3,8 +3,10 @@ import { ClaudeCodeAdapter, resolveClaudeExecutable } from './claude-code-adapte
 import { createCimiCodeAdapter } from '../cimicode/adapter.js'
 import { LocalGoAdapter } from './local-go-adapter.js'
 import { CodexCliAdapter, resolveCodexExecutable } from './codex-cli-adapter.js'
+import { ExistingMavenAdapter } from './existing-maven-adapter.js'
 
 export function createAgentAdapter(): AgentAdapter | null {
+  if (process.env.TEST_AGENT_PROVIDER === 'existing-maven') return new ExistingMavenAdapter()
   if (process.env.TEST_AGENT_PROVIDER === 'cimicode') return createCimiCodeAdapter()
   if (process.env.TEST_AGENT_PROVIDER === 'codex-cli') {
     const codex = resolveCodexExecutable()

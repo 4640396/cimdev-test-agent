@@ -3,6 +3,7 @@ out/
 dist/
 coverage/
 .env
+.env.mysql-it
 .DS_Store
 *.log
 services/control-server/target/

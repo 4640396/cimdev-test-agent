@@ -4,9 +4,17 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
 import { afterAll, describe, expect, it } from 'vitest'
-import { computeMetrics, countAssertionFiles, parseSurefireSummary, runApiCases, runNodeUnitTests } from './validator.js'
+import { computeMetrics, countAssertionFiles, mavenCommandSpec, parseSurefireSummary, runApiCases, runMavenCommand, runNodeUnitTests, scrubExecutionEnvironment } from './validator.js'
 
 const projects: string[] = []
+
+it('uses the Windows Maven launcher instead of the extensionless Unix script', () => {
+  expect(mavenCommandSpec('C:\\project', 'win32')).toEqual({
+    command: 'cmd.exe',
+    args: ['/d', '/s', '/c', 'mvn.cmd test'],
+    cwd: 'C:\\project'
+  })
+})
 
 function makeProject(files: Record<string, string>): string {
   const root = join(tmpdir(), `cimdev-validator-${Math.random().toString(36).slice(2)}`)
@@ -31,6 +39,20 @@ afterAll(() => {
 })
 
 describe('validator', () => {
+  it('执行环境保留工具链变量但移除凭据', () => {
+    expect(scrubExecutionEnvironment({ PATH: 'bin', JAVA_HOME: 'jdk', TEST_AGENT_API_TOKEN: 'secret', DB_PASSWORD: 'secret', AWS_ACCESS_KEY_ID: 'secret' }))
+      .toEqual({ PATH: 'bin', JAVA_HOME: 'jdk' })
+  })
+
+  it('超时会终止受管根进程及其子进程树', { timeout: 15_000 }, async () => {
+    const fixture = join(process.cwd(), 'workers', 'runner', 'src', 'fixtures', 'slow-process.cjs')
+    const outcome = await runMavenCommand(process.cwd(), { command: process.execPath, args: [fixture], cwd: process.cwd() }, AbortSignal.timeout(500))
+    expect(outcome).toMatchObject({ ok: false, aborted: true, timedOut: true })
+    const childPid = Number(/CHILD_PID=(\d+)/.exec(outcome.raw)?.[1])
+    expect(childPid).toBeGreaterThan(0)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(() => process.kill(childPid, 0)).toThrow()
+  })
   it('独立重跑 node 测试并解析通过数、失败数与覆盖率', () => {
     const root = makeProject({
       'package.json': '{"name":"v","type":"module"}',

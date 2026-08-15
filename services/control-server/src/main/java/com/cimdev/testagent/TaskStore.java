@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -64,9 +65,49 @@ class TaskStore {
 
     TaskLog appendLog(String taskId, String level, String message) {
         var now = Timestamp.from(Instant.now());
-        jdbc.update("INSERT INTO task_logs(task_id,level,message,created_at) VALUES(?,?,?,?)", taskId, level, message, now);
-        var id = jdbc.queryForObject("SELECT MAX(id) FROM task_logs WHERE task_id=?", Long.class, taskId);
-        return new TaskLog(id == null ? 0 : id, level, message, now.toInstant());
+        var key = new GeneratedKeyHolder();
+        jdbc.update(connection -> {
+            var statement = connection.prepareStatement(
+                    "INSERT INTO task_logs(task_id,level,message,created_at) VALUES(?,?,?,?)",
+                    new String[]{"id"});
+            statement.setString(1, taskId);
+            statement.setString(2, level);
+            statement.setString(3, message);
+            statement.setTimestamp(4, now);
+            return statement;
+        }, key);
+        var id = key.getKey();
+        if (id == null) throw new IllegalStateException("Database did not return a generated task log id");
+        return new TaskLog(id.longValue(), level, message, now.toInstant());
+    }
+
+    boolean appendRunEvent(String taskId, String workerId, RunEventRequest event) {
+        return Boolean.TRUE.equals(transactions.execute(status -> {
+            jdbc.queryForObject("SELECT id FROM test_tasks WHERE id=? FOR UPDATE", String.class, taskId);
+            var existing = jdbc.query("SELECT schema_version,execution_id,event_type,event_data,worker_id FROM task_run_events WHERE task_id=? AND sequence_no=?",
+                    (rs, row) -> List.of(rs.getInt(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)), taskId, event.sequence());
+            if (!existing.isEmpty()) {
+                var row = existing.get(0);
+                var same = row.get(0).equals(event.schemaVersion()) && row.get(1).equals(event.executionId())
+                        && row.get(2).equals(event.type()) && row.get(3).equals(event.data().toString()) && row.get(4).equals(workerId);
+                if (same) return false;
+                throw new IllegalStateException("运行事件序号冲突：" + event.sequence());
+            }
+            var maximum = jdbc.queryForObject("SELECT COALESCE(MAX(sequence_no),0) FROM task_run_events WHERE task_id=?", Long.class, taskId);
+            var expected = (maximum == null ? 0 : maximum) + 1;
+            if (event.sequence() != expected) throw new IllegalArgumentException("运行事件必须连续，期望序号：" + expected);
+            jdbc.update("INSERT INTO task_run_events(task_id,sequence_no,schema_version,execution_id,event_type,event_time,event_data,worker_id,received_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    taskId, event.sequence(), event.schemaVersion(), event.executionId(), event.type(), Timestamp.from(event.timestamp()),
+                    event.data().toString(), workerId, Timestamp.from(Instant.now()));
+            return true;
+        }));
+    }
+
+    List<RunEventView> runEvents(String taskId) {
+        return jdbc.query("SELECT * FROM task_run_events WHERE task_id=? ORDER BY sequence_no", (rs, row) ->
+                new RunEventView(rs.getInt("schema_version"), rs.getString("execution_id"), rs.getLong("sequence_no"),
+                        rs.getTimestamp("event_time").toInstant(), rs.getString("event_type"), tree(rs.getString("event_data")),
+                        rs.getString("worker_id"), rs.getTimestamp("received_at").toInstant()), taskId);
     }
 
     void updateStage(String taskId, String stage) {
@@ -94,18 +135,26 @@ class TaskStore {
                 Timestamp.from(Instant.now().plusSeconds(leaseSeconds)), Timestamp.from(Instant.now()), taskId, workerId);
     }
 
-    boolean complete(String id, JsonNode result) {
+    boolean complete(String id, JsonNode result, String completionHash) {
         var report = result.path("report");
         var artifacts = result.path("artifacts");
         var gatePassed = result.path("gate").path("passed").asBoolean(true);
         var status = gatePassed ? "COMPLETED" : "NEEDS_REVIEW";
-        return jdbc.update("UPDATE test_tasks SET status=?,stage=?,report_json=?,artifacts_json=?,lease_until=NULL,updated_at=? WHERE id=? AND status='RUNNING'",
-                status, status, report.isMissingNode() ? null : report.toString(), artifacts.isMissingNode() ? null : artifacts.toString(), Timestamp.from(Instant.now()), id) == 1;
+        var updated = jdbc.update("UPDATE test_tasks SET status=?,stage=?,report_json=?,artifacts_json=?,completion_hash=?,lease_until=NULL,updated_at=? WHERE id=? AND status='RUNNING'",
+                status, status, report.isMissingNode() ? null : report.toString(), artifacts.isMissingNode() ? null : artifacts.toString(), completionHash, Timestamp.from(Instant.now()), id);
+        if (updated == 1) return true;
+        var hashes = jdbc.query("SELECT completion_hash FROM test_tasks WHERE id=? AND status IN ('COMPLETED','NEEDS_REVIEW')", (rs, row) -> rs.getString(1), id);
+        if (hashes.size() == 1 && completionHash.equals(hashes.get(0))) return false;
+        throw new ConflictException("任务已由不同结果完成");
     }
 
-    void fail(String id, String error) {
-        jdbc.update("UPDATE test_tasks SET status='FAILED',stage='FAILED',error_message=?,lease_until=NULL,updated_at=? WHERE id=? AND status IN ('RUNNING','QUEUED')",
+    boolean fail(String id, String error) {
+        var updated = jdbc.update("UPDATE test_tasks SET status='FAILED',stage='FAILED',error_message=?,lease_until=NULL,updated_at=? WHERE id=? AND status IN ('RUNNING','QUEUED')",
                 error, Timestamp.from(Instant.now()), id);
+        if (updated == 1) return true;
+        var terminal = jdbc.query("SELECT status,error_message FROM test_tasks WHERE id=?", (rs, row) -> List.of(rs.getString(1), Optional.ofNullable(rs.getString(2)).orElse("")), id);
+        if (terminal.size() == 1 && "FAILED".equals(terminal.get(0).get(0)) && error.equals(terminal.get(0).get(1))) return false;
+        throw new ConflictException("Task is already in a different terminal state");
     }
 
     boolean cancel(String id) {
@@ -131,15 +180,26 @@ class TaskStore {
 
     Optional<ProjectView> project(String id) { return projects().stream().filter(item -> item.id().equals(id)).findFirst(); }
 
-    void saveWorker(WorkerView worker) {
+    boolean insertWorker(WorkerView worker, String secretHash) {
         var now = Timestamp.from(Instant.now());
-        jdbc.update("INSERT INTO workers(id,name,capabilities_json,status,last_heartbeat_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?) " +
-                        "ON DUPLICATE KEY UPDATE name=VALUES(name),capabilities_json=VALUES(capabilities_json),status=VALUES(status),last_heartbeat_at=VALUES(last_heartbeat_at),updated_at=VALUES(updated_at)",
-                worker.id(), worker.name(), write(worker.capabilities()), worker.status(), Timestamp.from(worker.lastHeartbeatAt()), now, now);
+        try {
+            jdbc.update("INSERT INTO workers(id,name,capabilities_json,status,last_heartbeat_at,created_at,updated_at,secret_hash) VALUES(?,?,?,?,?,?,?,?)",
+                    worker.id(), worker.name(), write(worker.capabilities()), worker.status(), Timestamp.from(worker.lastHeartbeatAt()), now, now, secretHash);
+            return true;
+        } catch (DataIntegrityViolationException duplicate) {
+            return false;
+        }
     }
 
-    void updateWorkerSecret(String id, String secretHash) {
-        jdbc.update("UPDATE workers SET secret_hash=?,updated_at=? WHERE id=?", secretHash, Timestamp.from(Instant.now()), id);
+    boolean rotateWorker(WorkerView worker, String expectedSecretHash, String newSecretHash) {
+        return jdbc.update("UPDATE workers SET name=?,capabilities_json=?,status=?,last_heartbeat_at=?,secret_hash=?,updated_at=? WHERE id=? AND secret_hash=?",
+                worker.name(), write(worker.capabilities()), worker.status(), Timestamp.from(worker.lastHeartbeatAt()), newSecretHash,
+                Timestamp.from(Instant.now()), worker.id(), expectedSecretHash) == 1;
+    }
+
+    boolean workerExists(String id) {
+        var count = jdbc.queryForObject("SELECT COUNT(*) FROM workers WHERE id=?", Long.class, id);
+        return count != null && count == 1;
     }
 
     boolean verifyWorkerSecret(String id, String secretHash) {
@@ -160,6 +220,11 @@ class TaskStore {
         jdbc.update("INSERT INTO schedules(id,project_id,interval_minutes,enabled,next_run_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?) " +
                         "ON DUPLICATE KEY UPDATE project_id=VALUES(project_id),interval_minutes=VALUES(interval_minutes),enabled=VALUES(enabled),next_run_at=VALUES(next_run_at),updated_at=VALUES(updated_at)",
                 schedule.id(), schedule.projectId(), schedule.intervalMinutes(), schedule.enabled(), Timestamp.from(schedule.nextRunAt()), Timestamp.from(schedule.createdAt()), Timestamp.from(schedule.updatedAt()));
+    }
+
+    boolean advanceSchedule(String id, Instant expectedNextRunAt, Instant nextRunAt, Instant updatedAt) {
+        return jdbc.update("UPDATE schedules SET next_run_at=?,updated_at=? WHERE id=? AND enabled=TRUE AND next_run_at=?",
+                Timestamp.from(nextRunAt), Timestamp.from(updatedAt), id, Timestamp.from(expectedNextRunAt)) == 1;
     }
 
     List<ScheduleView> schedules() {

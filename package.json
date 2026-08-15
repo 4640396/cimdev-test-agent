@@ -11,7 +11,11 @@
     "test": "vitest run",
     "build": "npm run typecheck && electron-vite build",
     "worker": "node out/main/worker-cli.js",
-    "server:build": "mvn -f services/control-server/pom.xml package"
+    "server:build": "mvn -f services/control-server/pom.xml package",
+    "readiness:static": "node tools/production-readiness.mjs",
+    "readiness:production": "node tools/production-readiness.mjs --production",
+    "e2e:production": "node tools/production-e2e.mjs",
+    "test:mysql": "node tools/mysql-integration.mjs"
   },
   "dependencies": {
     "vue": "^3.5.13"

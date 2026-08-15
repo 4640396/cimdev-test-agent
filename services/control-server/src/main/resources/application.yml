@@ -16,6 +16,13 @@ spring:
       max-file-size: 200MB
       max-request-size: 220MB
 management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,runtimeReadiness,db
   endpoints:
     web:
       exposure:
@@ -25,9 +32,12 @@ management:
       probability: 1.0
   otlp:
     tracing:
+      export:
+        enabled: ${TEST_AGENT_OTLP_ENABLED:false}
       endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 test-agent:
   storage-root: ${TEST_AGENT_STORAGE_ROOT:./data}
   api-token: ${TEST_AGENT_API_TOKEN:}
+  role-tokens: ${TEST_AGENT_ROLE_TOKENS:}
   task-lease-seconds: ${TEST_AGENT_TASK_LEASE_SECONDS:60}
   scheduler-delay-ms: ${TEST_AGENT_SCHEDULER_DELAY_MS:30000}
