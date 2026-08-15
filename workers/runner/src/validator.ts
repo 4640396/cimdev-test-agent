@@ -47,7 +47,7 @@ export interface MavenCommandSpec {
 }
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.test-agent', 'out', 'dist', '.test-agent-worker', 'legacy', 'target'])
-const ASSERTION_PATTERN = /\b(assert|expect|should|deepStrictEqual|strictEqual|equal|Assertions|assertThat|verify|Assert\.)\b/
+const ASSERTION_PATTERN = /\b(assert\w*|expect|should|deepStrictEqual|strictEqual|equal|verify)\b/i
 const SENSITIVE_ENV_NAME = /(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH)/i
 
 /** Preserve toolchain environment while removing credentials owned by the Worker process. */
@@ -307,7 +307,7 @@ test('login page loads and renders', async ({ page }) => {
 export function countAssertionFiles(projectPath: string): AssertionCount {
   const files: string[] = []
   const collect = (dir: string, depth: number): void => {
-    if (depth > 5) return
+    if (depth > 30) return
     let entries: string[]
     try {
       entries = readdirSync(dir)
@@ -324,7 +324,7 @@ export function countAssertionFiles(projectPath: string): AssertionCount {
       }
       if (stat.isDirectory()) {
         if (!SKIP_DIRS.has(basename(full))) collect(full, depth + 1)
-      } else if (/\.(test\.(js|mjs|cjs|ts)|Test\.java|spec\.(js|mjs|cjs|ts))$/.test(entry)) {
+      } else if (/(\.(test|spec)\.(js|mjs|cjs|ts)|(Test|Tests|IT)\.java)$/.test(entry)) {
         files.push(full)
       }
     }

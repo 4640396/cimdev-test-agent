@@ -97,6 +97,16 @@ describe('validator', () => {
     expect(count.withAssertions).toBe(2)
   })
 
+  it('countAssertionFiles 识别 Java 断言方法', () => {
+    const root = makeProject({
+      'src/test/java/com/demo/FooTest.java': "class FooTest { @Test void t() { assertEquals(1, 1); assertTrue(true); } }\n",
+      'src/test/java/com/demo/NoAssertTest.java': "class NoAssertTest { @Test void t() { System.out.println(\"ok\"); } }\n"
+    })
+    const count = countAssertionFiles(root)
+    expect(count.total).toBe(2)
+    expect(count.withAssertions).toBe(1)
+  })
+
   it('解析 surefire 汇总行', () => {
     const summary = parseSurefireSummary('Tests run: 3, Failures: 1, Errors: 0, Skipped: 1, Time elapsed: 0.5 sec')
     expect(summary).toEqual({ tests: 3, fail: 1 })

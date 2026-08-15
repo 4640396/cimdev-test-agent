@@ -12,6 +12,20 @@ export interface TaskInput {
   knowledgeRoots?: string[]
   targetClasses?: string[]
   apiBaseUrl?: string
+  /**
+   * Execution target invariant: endpoint tasks are device-bound and must never
+   * be re-dispatched to another terminal; shared tasks are re-acquirable and
+   * must never carry developer-local absolute paths.
+   */
+  executionTarget?: 'endpoint' | 'shared'
+  deviceId?: string
+  workspaceId?: string
+  sourceSnapshot?: {
+    gitHead?: string
+    dirty?: boolean
+    digest?: string
+  }
+  sourceRef?: string
 }
 
 export interface ProjectSelection {
@@ -22,7 +36,7 @@ export interface ProjectSelection {
 
 export interface RuntimeStatus {
   mode: 'unavailable' | 'real'
-  provider: 'local-go' | 'claude-code' | 'codex-cli' | 'cimicode' | null
+  provider: 'local-go' | 'claude-code' | 'codex-cli' | 'cimicode' | 'local-host' | null
   message: string
 }
 
@@ -105,4 +119,28 @@ export interface DesktopApi {
   cancelTask(taskId: string): Promise<TaskSnapshot | null>
   retryTask(taskId: string): Promise<{ taskId: string } | null>
   subscribeTask(listener: (snapshot: TaskSnapshot) => void): () => void
+}
+
+export interface LocalHostStatus {
+  running: boolean
+  protocolVersion?: number
+  hostVersion?: string
+  capabilities?: string[]
+  activeRuns?: number
+  error?: string
+}
+
+export interface LocalHostStartResult {
+  taskId: string
+}
+
+export interface LocalHostCancelResult {
+  cancelled: boolean
+}
+
+export interface LocalHostApi {
+  getStatus(): Promise<LocalHostStatus>
+  start(input: TaskInput, executionId?: string): Promise<LocalHostStartResult>
+  cancel(executionId: string): Promise<LocalHostCancelResult>
+  subscribe(listener: (message: unknown) => void): () => void
 }

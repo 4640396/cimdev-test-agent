@@ -78,6 +78,8 @@ npm run worker
 
 对于已经拥有Maven测试套件、只需要确定性执行与质量门禁的项目，可设置`TEST_AGENT_PROVIDER=existing-maven`。它是Agent Provider而不是第四个测试插件：只负责把现有`*Test.java`、`*Tests.java`和`*IT.java`清点成结构化测试计划，真正执行仍唯一经过`maven_test`及其隔离Executor。
 
+未设置`TEST_AGENT_PROVIDER`时默认使用`existing-maven`，与当前Java/Maven专用测试Agent定位一致。旧的本地Go执行器仅在显式设置`TEST_AGENT_PROVIDER=local-go`时启用；未知Provider会在Worker启动时直接拒绝，避免任务领取后才暴露路由错误。
+
 `maven_test`会把受限长度的原始工具输出保存为每次运行的`maven-test.log`制品，便于复核编译、测试发现和基础设施错误；质量门禁仍只使用结构化解析结果作决定，不采信Agent自行报告的通过数字。
 
 Worker注册、心跳、按能力标签领取任务，调用Provider和真实测试工具，并回传结构化日志、报告与制品。

@@ -2,14 +2,17 @@ import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import { join } from 'node:path'
 import { basename } from 'node:path'
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
-import type { TaskInput, TaskSnapshot, TestType } from '../../../../contracts/src/contracts.js'
+import type { LocalHostStatus, TaskInput, TaskSnapshot, TestType } from '../../../../contracts/src/contracts.js'
+import { createStdioHostIO, LocalHostClient } from './local-host-client.js'
 
 let mainWindow: BrowserWindow | null = null
 const execFileAsync = promisify(execFile)
 const serverUrl = (process.env.TEST_AGENT_SERVER_URL ?? 'http://127.0.0.1:8088').replace(/\/$/, '')
 const taskWatchers = new Map<string, NodeJS.Timeout>()
 let knowledgeRoots: string[] = []
+let localHostClient: LocalHostClient | null = null
 
 interface ServerTask {
   id: string
@@ -59,6 +62,21 @@ function watchTask(taskId: string): void {
   }
   void poll()
   taskWatchers.set(taskId, setInterval(() => { void poll() }, 1000))
+}
+
+function ensureLocalHostClient(): LocalHostClient {
+  if (localHostClient) return localHostClient
+  const hostCliPath = process.env.TEST_AGENT_HOST_CLI_PATH ?? join(app.getAppPath(), 'out', 'main', 'host-cli.js')
+  const env = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: '1',
+    TEST_AGENT_HOST_CAPABILITIES: process.env.TEST_AGENT_HOST_CAPABILITIES ?? 'windows,node,codex-cli,go,java,vue,playwright'
+  }
+  const io = createStdioHostIO(process.execPath, [hostCliPath], { cwd: process.cwd(), env })
+  const client = new LocalHostClient(io)
+  client.onMessage((message) => mainWindow?.webContents.send('host:message', message))
+  localHostClient = client
+  return client
 }
 
 async function detectVersion(projectPath: string): Promise<string> {
@@ -200,6 +218,37 @@ app.whenReady().then(() => {
     watchTask(task.id)
     return { taskId: task.id }
   })
+  ipcMain.handle('host:status', async (): Promise<LocalHostStatus> => {
+    try {
+      const client = ensureLocalHostClient()
+      const handshake = await client.handshake()
+      if (handshake.kind !== 'handshake') return { running: false, error: 'handshake failed' }
+      if (!handshake.ok) return { running: false, error: handshake.error ?? 'handshake rejected' }
+      const health = await client.health()
+      return {
+        running: true,
+        protocolVersion: handshake.protocolVersion,
+        hostVersion: handshake.hostVersion,
+        capabilities: handshake.capabilities,
+        activeRuns: health.kind === 'health' ? health.activeRuns : undefined
+      }
+    } catch (error) {
+      return { running: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('host:start', async (_event, input: TaskInput, executionId?: string) => {
+    const client = ensureLocalHostClient()
+    const id = executionId && executionId.trim() !== '' ? executionId : randomUUID()
+    void client.run(input, id).catch((error) => {
+      mainWindow?.webContents.send('host:message', { id: '', kind: 'error', message: error instanceof Error ? error.message : String(error) })
+    })
+    return { taskId: id }
+  })
+  ipcMain.handle('host:cancel', async (_event, executionId: string) => {
+    const client = ensureLocalHostClient()
+    const response = await client.cancel(executionId)
+    return { cancelled: response.kind === 'cancelled' }
+  })
 
   createWindow()
 
@@ -215,4 +264,6 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   for (const timer of taskWatchers.values()) clearInterval(timer)
   taskWatchers.clear()
+  localHostClient?.close()
+  localHostClient = null
 })

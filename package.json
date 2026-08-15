@@ -11,6 +11,7 @@
     "test": "vitest run",
     "build": "npm run typecheck && electron-vite build",
     "worker": "node out/main/worker-cli.js",
+    "host": "node out/main/host-cli.js",
     "server:build": "mvn -f services/control-server/pom.xml package",
     "readiness:static": "node tools/production-readiness.mjs",
     "readiness:production": "node tools/production-readiness.mjs --production",
@@ -18,7 +19,10 @@
     "test:mysql": "node tools/mysql-integration.mjs"
   },
   "dependencies": {
-    "vue": "^3.5.13"
+    "@standard-schema/spec": "^1.1.0",
+    "koffi": "^3.1.0",
+    "vue": "^3.5.13",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

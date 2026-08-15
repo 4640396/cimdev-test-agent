@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import type { RuntimeStatus, TaskInput, TaskSnapshot, TestType } from '../../../../../contracts/src/contracts'
+import type { LocalHostStatus, RuntimeStatus, TaskInput, TaskSnapshot, TestType } from '../../../../../contracts/src/contracts'
+import type { HostMessage, RunResultMessage } from '../../../../../contracts/src/local-host-protocol'
 import { emptyLanes, laneLabels, progressOf } from './task-state'
 
 const form = reactive<TaskInput>({
@@ -12,15 +13,18 @@ const form = reactive<TaskInput>({
 const snapshot = ref<TaskSnapshot | null>(null)
 const error = ref('')
 const starting = ref(false)
-const runtime = ref<RuntimeStatus>({ mode: 'unavailable', provider: null, message: '正在读取运行模式' })
+const runtime = ref<RuntimeStatus>({ mode: 'unavailable', provider: null, message: '正在读取本机 Host 状态' })
 const knowledgeRoots = ref<string[]>([])
-let unsubscribe: (() => void) | undefined
+const localStatus = ref<LocalHostStatus>({ running: false })
+const localLogs = ref<TaskSnapshot['logs']>([])
+const localTaskId = ref('')
 let unsubscribeRoots: (() => void) | undefined
+let unsubscribeLocal: (() => void) | undefined
 
 const lanes = computed(() => snapshot.value?.lanes ?? emptyLanes(form.testTypes))
 const progress = computed(() => progressOf(snapshot.value))
 const taskActive = computed(() => snapshot.value?.status === 'queued' || snapshot.value?.status === 'planning' || snapshot.value?.status === 'running' || snapshot.value?.status === 'needsReview')
-const canStart = computed(() => Boolean(runtime.value.mode === 'real' && form.projectPath && form.systemName && form.testTypes.length && !starting.value && !taskActive.value))
+const canStart = computed(() => Boolean(localStatus.value.running && form.projectPath && form.systemName && form.testTypes.length && !starting.value && !taskActive.value))
 
 async function selectProject(): Promise<void> {
   error.value = ''
@@ -41,15 +45,133 @@ function toggleType(type: TestType): void {
   else form.testTypes.push(type)
 }
 
+function pushLocalLog(level: 'info' | 'success' | 'warning' | 'error', message: string): void {
+  localLogs.value.push({ id: `${Date.now()}-${localLogs.value.length}`, time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level, message })
+  if (localLogs.value.length > 300) localLogs.value.splice(0, localLogs.value.length - 300)
+}
+
+interface LocalRunOutcome {
+  adapterResult?: { artifacts?: string[] }
+  report?: {
+    passed?: number
+    failed?: number
+    coverage?: number | null
+    metrics?: NonNullable<TaskSnapshot['report']>['metrics']
+    gate?: { passed?: boolean }
+    knowledge?: NonNullable<TaskSnapshot['report']>['knowledge']
+  }
+  lanes?: Array<{ type: TestType; status: 'passed' | 'failed'; summary: string }>
+}
+
+function applyRunResult(message: RunResultMessage): void {
+  const outcome = message.outcome as LocalRunOutcome
+  const runReport = outcome.report
+  const metrics = runReport?.metrics
+  const gate = runReport?.gate
+  const report: TaskSnapshot['report'] | undefined = runReport
+    ? {
+        passed: runReport.passed ?? 0,
+        failed: runReport.failed ?? 0,
+        coverage: runReport.coverage ?? null,
+        metrics,
+        gate: gate
+          ? {
+              coverageTarget: 0,
+              coverage: runReport.coverage ?? null,
+              effectiveRate: metrics?.effectiveRate ?? 0,
+              passed: gate.passed ?? false,
+              reason: ''
+            }
+          : undefined,
+        knowledge: runReport.knowledge
+      }
+    : undefined
+  snapshot.value = {
+    taskId: message.executionId,
+    status: gate?.passed === false ? 'needsReview' : 'completed',
+    logs: [...localLogs.value],
+    lanes: (outcome.lanes ?? []).map((lane) => ({ type: lane.type, status: lane.status, summary: lane.summary })),
+    artifacts: outcome.adapterResult?.artifacts ?? [],
+    report
+  }
+}
+
+function handleLocalMessage(raw: unknown): void {
+  const message = raw as HostMessage
+  switch (message.kind) {
+    case 'handshake':
+      localStatus.value = {
+        running: message.ok,
+        protocolVersion: message.protocolVersion,
+        hostVersion: message.hostVersion,
+        capabilities: message.capabilities,
+        error: message.error
+      }
+      runtime.value = message.ok
+        ? { mode: 'real', provider: 'local-host', message: `本机 Host 在线 v${message.hostVersion ?? '?'}` }
+        : { mode: 'unavailable', provider: null, message: `本机 Host 握手失败：${message.error ?? ''}` }
+      break
+    case 'health':
+      break
+    case 'run-accepted':
+      localTaskId.value = message.executionId
+      snapshot.value = { taskId: message.executionId, status: 'running', logs: [], lanes: emptyLanes(form.testTypes), artifacts: [] }
+      pushLocalLog('info', `任务已接受：${message.executionId}`)
+      break
+    case 'event':
+      pushLocalLog(message.event.level, message.event.message)
+      if (message.event.stage) snapshot.value = snapshot.value ? { ...snapshot.value, status: 'running' } : snapshot.value
+      break
+    case 'run-event':
+      break
+    case 'run-result':
+      pushLocalLog('success', `任务完成：${message.executionId}`)
+      applyRunResult(message)
+      break
+    case 'run-error':
+      pushLocalLog('error', `任务失败：${message.error}`)
+      snapshot.value = {
+        taskId: message.executionId,
+        status: message.cancelled ? 'cancelled' : 'failed',
+        logs: [...localLogs.value],
+        lanes: snapshot.value?.lanes ?? emptyLanes(form.testTypes),
+        artifacts: snapshot.value?.artifacts ?? []
+      }
+      break
+    case 'cancelled':
+      pushLocalLog('warning', `任务已取消：${message.executionId}`)
+      if (snapshot.value) snapshot.value = { ...snapshot.value, status: 'cancelled', logs: [...localLogs.value] }
+      break
+    case 'error':
+      pushLocalLog('error', message.message)
+      break
+  }
+}
+
+async function refreshRuntime(): Promise<void> {
+  try {
+    const status = await window.testAgentLocal.getStatus()
+    localStatus.value = status
+    runtime.value = status.running
+      ? { mode: 'real', provider: 'local-host', message: `本机 Host 在线${status.hostVersion ? ` v${status.hostVersion}` : ''}（能力：${(status.capabilities ?? []).join(', ') || '未报告'}）` }
+      : { mode: 'unavailable', provider: null, message: `本机 Host 未就绪${status.error ? '：' + status.error : ''}` }
+  } catch (reason) {
+    localStatus.value = { running: false, error: reason instanceof Error ? reason.message : '本机 Host 检查失败' }
+    runtime.value = { mode: 'unavailable', provider: null, message: localStatus.value.error ?? '' }
+  }
+}
+
 async function startTask(): Promise<void> {
   error.value = ''
   starting.value = true
+  localLogs.value = []
   try {
-    await window.testAgent.startTask({
+    const result = await window.testAgentLocal.start({
       ...form,
       testTypes: [...form.testTypes],
       knowledgeRoots: knowledgeRoots.value.length > 0 ? [...knowledgeRoots.value] : undefined
     })
+    localTaskId.value = result.taskId
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '任务启动失败'
   } finally {
@@ -58,23 +180,23 @@ async function startTask(): Promise<void> {
 }
 
 async function cancelTask(): Promise<void> {
-  if (!snapshot.value || !taskActive.value) return
-  await window.testAgent.cancelTask(snapshot.value.taskId)
+  if (!localTaskId.value || !taskActive.value) return
+  await window.testAgentLocal.cancel(localTaskId.value)
 }
 
 onMounted(() => {
-  void window.testAgent.getRuntimeStatus().then((status) => (runtime.value = status))
   void window.testAgent.getKnowledgeRoots().then((roots) => (knowledgeRoots.value = roots))
   unsubscribeRoots = window.testAgent.onKnowledgeRootsChanged((roots) => (knowledgeRoots.value = roots))
-  unsubscribe = window.testAgent.subscribeTask((next) => (snapshot.value = next))
+  unsubscribeLocal = window.testAgentLocal.subscribe(handleLocalMessage)
+  void refreshRuntime()
 })
-onBeforeUnmount(() => { unsubscribe?.(); unsubscribeRoots?.() })
+onBeforeUnmount(() => { unsubscribeRoots?.(); unsubscribeLocal?.() })
 </script>
 
 <template>
   <main class="shell">
     <header class="topbar">
-      <div class="brand"><span class="logo">≡</span><strong>CIMDEV Test Agent · QA Pipeline</strong><small class="mode-badge" :class="runtime.mode">{{ runtime.mode === 'real' ? '真实模式' : '未就绪' }}</small></div>
+      <div class="brand"><span class="logo">≡</span><strong>CIMDEV Test Agent · QA Pipeline</strong><small class="mode-badge" :class="runtime.mode">{{ runtime.mode === 'real' ? '本机 Host' : '未就绪' }}</small></div>
       <button v-if="taskActive" class="dark-button" @click="cancelTask">■ 取消任务</button>
       <button v-else class="dark-button" :disabled="!canStart" @click="startTask">▶ {{ starting ? '启动中' : '发起真实测试' }}</button>
     </header>
@@ -106,8 +228,8 @@ onBeforeUnmount(() => { unsubscribe?.(); unsubscribeRoots?.() })
       <article class="console-panel">
         <div class="console-title"><h2>② Agent 执行日志</h2><span><i></i><i></i><i></i></span></div>
         <div class="console-lines">
-          <p v-if="!snapshot">{{ runtime.message }}</p>
-          <p v-for="log in snapshot?.logs" :key="log.id" :class="log.level"><b>[{{ log.time }}]</b> {{ log.message }}</p>
+          <p v-if="!localLogs.length">{{ runtime.message }}</p>
+          <p v-for="log in localLogs" :key="log.id" :class="log.level"><b>[{{ log.time }}]</b> {{ log.message }}</p>
         </div>
       </article>
     </section>
@@ -124,8 +246,8 @@ onBeforeUnmount(() => { unsubscribe?.(); unsubscribeRoots?.() })
       </article>
 
       <article class="dispatch-card">
-        <span>④</span><h2>智能分发</h2>
-        <p>按照测试类型、技术栈和执行环境分配任务</p>
+        <span>④</span><h2>本机执行</h2>
+        <p>任务直接交给本机 Host 与 TestKernel，不进入 Java 中央队列</p>
       </article>
 
       <div class="lanes">
