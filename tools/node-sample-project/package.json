@@ -1,0 +1,7 @@
+{
+  "name": "node-sample-project",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

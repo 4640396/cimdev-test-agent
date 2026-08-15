@@ -240,9 +240,46 @@ export function resolveBundledPlaywrightCli(): string {
   return join(process.cwd(), 'node_modules', '@playwright', 'test', 'cli.js')
 }
 
-/** 独立重跑 Playwright UI 测试：使用内置 Playwright + 自动生成临时脚手架（被测项目零安装）。 */
-export function runPlaywrightUiTests(projectPath: string): NodeTestOutcome {
-  const cli = resolveBundledPlaywrightCli()
+function findPlaywrightConfig(projectPath: string): string | undefined {
+  const names = ['playwright.config.ts', 'playwright.config.js', 'playwright.config.mjs', 'playwright.config.cjs']
+  for (const name of names) {
+    const path = join(projectPath, name)
+    if (existsSync(path)) return path
+  }
+  return undefined
+}
+
+function parsePlaywrightStats(raw: string): { tests: number; pass: number; fail: number } {
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start < 0 || end <= start) return { tests: 0, pass: 0, fail: 0 }
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as { stats?: { expected?: number; unexpected?: number; flaky?: number } }
+    return {
+      tests: Number(parsed.stats?.expected ?? 0) + Number(parsed.stats?.unexpected ?? 0) + Number(parsed.stats?.flaky ?? 0),
+      pass: Number(parsed.stats?.expected ?? 0),
+      fail: Number(parsed.stats?.unexpected ?? 0)
+    }
+  } catch {
+    return { tests: 0, pass: 0, fail: 0 }
+  }
+}
+
+function runProjectPlaywright(projectPath: string, cli: string): NodeTestOutcome {
+  const projectCli = join(projectPath, 'node_modules', '@playwright', 'test', 'cli.js')
+  const resolvedCli = existsSync(projectCli) ? projectCli : cli
+  const result = spawnSync('node', [resolvedCli, 'test', '--reporter=json'], {
+    cwd: projectPath,
+    encoding: 'utf8',
+    timeout: 300_000,
+    windowsHide: true
+  })
+  const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  const stats = parsePlaywrightStats(raw)
+  return { ok: result.status === 0, ...stats, coverage: null, compileError: false, raw }
+}
+
+function runGenericPlaywrightSmoke(projectPath: string, cli: string): NodeTestOutcome {
   const scaffoldRoot = join(process.cwd(), '.test-agent-pw', `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   mkdirSync(join(scaffoldRoot, 'tests'), { recursive: true })
   writeFileSync(join(scaffoldRoot, 'package.json'), '{"type":"module"}', 'utf8')
@@ -278,29 +315,22 @@ test('login page loads and renders', async ({ page }) => {
       windowsHide: true
     })
     const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
-    let tests = 0
-    let pass = 0
-    let fail = 0
-    const start = raw.indexOf('{')
-    const end = raw.lastIndexOf('}')
-    if (start >= 0 && end > start) {
-      try {
-        const parsed = JSON.parse(raw.slice(start, end + 1)) as { stats?: { expected?: number; unexpected?: number; flaky?: number } }
-        tests = Number(parsed.stats?.expected ?? 0) + Number(parsed.stats?.unexpected ?? 0) + Number(parsed.stats?.flaky ?? 0)
-        pass = Number(parsed.stats?.expected ?? 0)
-        fail = Number(parsed.stats?.unexpected ?? 0)
-      } catch {
-        // 解析失败时按 0 处理
-      }
-    }
-    return { ok: result.status === 0, tests, pass, fail, coverage: null, compileError: false, raw }
+    const stats = parsePlaywrightStats(raw)
+    return { ok: result.status === 0, ...stats, coverage: null, compileError: false, raw }
   } finally {
     try {
       rmSync(scaffoldRoot, { recursive: true, force: true })
     } catch {
-      // 清理失败忽略
+      // cleanup failure ignored
     }
   }
+}
+
+/** Independent Playwright UI verification: prefer the project's own config/tests, fall back to a generic smoke. */
+export function runPlaywrightUiTests(projectPath: string): NodeTestOutcome {
+  const cli = resolveBundledPlaywrightCli()
+  const config = findPlaywrightConfig(projectPath)
+  return config ? runProjectPlaywright(projectPath, cli) : runGenericPlaywrightSmoke(projectPath, cli)
 }
 
 /** 统计测试文件数与“含断言”的文件数（MVP 静态抽检，后续可换变异测试）。 */

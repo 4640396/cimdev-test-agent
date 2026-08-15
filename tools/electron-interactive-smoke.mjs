@@ -18,14 +18,14 @@ try {
   await window.waitForFunction(() => {
     const button = document.querySelector('button.dark-button')
     return button !== null && !button.disabled
-  }, { timeout: 30_000 })
+  }, undefined, { timeout: 30_000 })
 
   await start.click()
 
   await window.waitForFunction(() => {
     const numbers = document.querySelectorAll('.report-number strong')
     return numbers.length > 0 && numbers[0]?.textContent?.trim() === '21'
-  }, { timeout: 240_000 })
+  }, undefined, { timeout: 240_000 })
 
   const passed = await window.locator('.report-number strong').first().textContent()
   console.log('INTERACTIVE_SMOKE_PASSED', passed?.trim())
