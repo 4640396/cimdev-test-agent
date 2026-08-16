@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentRunResult } from './agent/types.js'
+import type { AgentEvent, AgentFeedback, AgentRunResult } from './agent/types.js'
 import { buildKnowledgeContext, collectKnowledgeRefs, resolveKnowledgeRoots } from './knowledge.js'
 import type { VerificationCheck } from './plugins/index.js'
 import type { MavenTestInput, MavenTestOutput } from './plugins/maven-test.js'
@@ -44,7 +44,7 @@ export interface AnalyzingStageResult {
   lanes: AgentRunResult['lanes']
 }
 
-export async function runGeneratingStage(context: TestKernelSessionContext, emit: (event: AgentEvent) => void | Promise<void>): Promise<GeneratingStageResult> {
+export async function runGeneratingStage(context: TestKernelSessionContext, emit: (event: AgentEvent) => void | Promise<void>, feedback?: AgentFeedback): Promise<GeneratingStageResult> {
   const { input, projectPath, capabilities, provider, pluginRuntime, executors, runEvents, signal } = context
   const knowledge = collectKnowledgeRefs(resolveKnowledgeRoots(input, projectPath), input.systemName)
   const knowledgeMeta: TestKernelKnowledgeMeta = {
@@ -64,7 +64,7 @@ export async function runGeneratingStage(context: TestKernelSessionContext, emit
     input,
     (event) => { void Promise.resolve(emit(event)).catch(console.error) },
     signal,
-    { knowledge: buildKnowledgeContext(knowledge) }
+    { knowledge: buildKnowledgeContext(knowledge), feedback }
   )
   runEvents.append('agent/completed', { provider: provider.name, lanes: adapterResult.lanes.length, artifacts: adapterResult.artifacts.length })
   const executionCapabilities = input.requiredCapabilities && input.requiredCapabilities.length > 0

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import type { TaskInput } from '../../../../contracts/src/contracts.js'
-import type { AgentAdapter, AgentEvent, AgentRunResult } from './types.js'
+import type { AgentAdapter, AgentEvent, AgentFeedback, AgentRunResult } from './types.js'
 import { killProcessTree } from '../proc.js'
 
 const RESULT_SCHEMA = {
@@ -98,7 +98,7 @@ function isCodexNoise(line: string): boolean {
   return CODEX_NOISE_PATTERNS.some((pattern) => pattern.test(line))
 }
 
-function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: string): string {
+function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: string, feedback?: AgentFeedback): string {
   const lines = [
     '你是 CIMDEV Test Agent 的测试执行代理。必须在当前项目内完成真实测试，不得虚构结果。',
     `系统：${input.systemName}`,
@@ -131,6 +131,16 @@ function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: stri
       ? [`12. 本次必须为以下核心类生成单元测试：${input.targetClasses.join('、')}。为每个类至少生成一个可编译、可运行的 JUnit 测试，不得以“无测试设施”为由跳过。`]
       : [])
   ]
+  if (feedback) {
+    lines.push('', '## 修复迭代（必须执行）')
+    lines.push('上一轮独立验证未通过，请修复失败的测试或被测代码，并再次真实执行测试。')
+    if (feedback.failedCases && feedback.failedCases.length > 0) {
+      lines.push('失败用例：')
+      for (const item of feedback.failedCases) lines.push(`- [${item.layer}] ${item.name}：${item.error}`)
+    }
+    if (feedback.gateReason) lines.push(`质量门禁未通过：${feedback.gateReason}`)
+    lines.push('修复后必须再次真实执行测试，并严格按输出 Schema 返回更新后的 lanes、report、artifacts、cases、riskPoints、fixes；不得把计划或未执行的修复描述成测试结果。')
+  }
   const base = lines.join('\n')
   return knowledge ? `${base}\n\n## 业务知识参考（仅作带来源的上下文，冲突转人工确认）\n${knowledge}` : base
 }
@@ -248,7 +258,7 @@ export class CodexCliAdapter implements AgentAdapter {
 
   constructor(private readonly executable: string) {}
 
-  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal, context?: { knowledge?: string }): Promise<AgentRunResult> {
+  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal, context?: { knowledge?: string; feedback?: AgentFeedback }): Promise<AgentRunResult> {
     return new Promise((resolveRun, reject) => {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const outputDirectory = join(input.projectPath, '.test-agent', 'results', stamp)
@@ -263,7 +273,7 @@ export class CodexCliAdapter implements AgentAdapter {
         '--sandbox', 'workspace-write',
         '--output-schema', schemaPath,
         '--output-last-message', resultPath,
-        buildPrompt(input, relative(input.projectPath, outputDirectory), context?.knowledge)
+        buildPrompt(input, relative(input.projectPath, outputDirectory), context?.knowledge, context?.feedback)
       ]
       const command = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : this.executable
       const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', this.executable, ...args] : args

@@ -21,7 +21,13 @@ export interface AgentRunResult {
   fixes?: unknown[]
 }
 
+export interface AgentFeedback {
+  gatePassed: boolean
+  gateReason?: string
+  failedCases?: Array<{ name: string; layer: string; error: string }>
+}
+
 export interface AgentAdapter {
   readonly name: string
-  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal, context?: { knowledge?: string }): Promise<AgentRunResult>
+  run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal, context?: { knowledge?: string; feedback?: AgentFeedback }): Promise<AgentRunResult>
 }
