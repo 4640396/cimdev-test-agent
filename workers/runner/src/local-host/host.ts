@@ -10,7 +10,6 @@ import Storage from '@cimdev/harness/dsh-storage'
 import { DomainFacility } from '@cimdev/harness/dsh-storage-domain'
 import { JsonStorageBackend } from '@cimdev/harness/dsh-storage-json'
 import WorkspaceRegistry from '@cimdev/harness/dsh-workspace'
-import LocalSandboxProvider from '@cimdev/harness/dsh-sandbox-local'
 import { createTestExecutorRegistry, parseTestExecutionConfig, type TestExecutionConfig } from '../executors/index.js'
 import { createWorkerPluginRuntime } from '../plugins/index.js'
 import type { WorkerPluginPolicy } from '../plugins/runtime.js'
@@ -132,7 +131,14 @@ export class LocalAgentHost {
     dshContext.storage.mount('domain', facility)
     dshContext.provide('storageDomain', facility)
     await dshContext.plugin(WorkspaceRegistry)
-    await dshContext.plugin(LocalSandboxProvider)
+    if (process.env.TEST_AGENT_ENABLE_DSH_SANDBOX === 'true') {
+      try {
+        const { default: LocalSandboxProvider } = await import('@cimdev/harness/dsh-sandbox-local')
+        await dshContext.plugin(LocalSandboxProvider)
+      } catch (error) {
+        console.warn('DSH sandbox unavailable, falling back to built-in policy', error)
+      }
+    }
     const workspace = await dshContext.workspaceRegistry.create(message.input.projectPath)
     const dshSession = dshContext.sessions.create(SessionId(message.executionId), { meta: { cwd: message.input.projectPath } })
     await workspace.attachSession(SessionId(message.executionId))

@@ -28,7 +28,9 @@ const dshAliases = {
   '@cimdev/harness/dsh-sandbox-local': 'packages/sandbox/sandbox-local/src/index.ts',
   '@cimdev/harness/dsh-sandbox-windows-acl': 'packages/sandbox/sandbox-windows-acl/src/index.ts',
   '@cimdev/harness/dsh-attachment': 'packages/attachment/attachment/src/index.ts',
-  '@cimdev/harness/node-addon-landlock-run': 'native/landlock-run/packages/entry/src/index.ts'
+  '@cimdev/harness/node-addon-landlock-run': 'native/landlock-run/packages/entry/src/index.ts',
+  '@cimdev/harness/dsh-workflow': 'packages/workflow/workflow/index.ts',
+  '@cimdev/harness/dsh-tool-workflow': 'packages/workflow/tool-workflow/index.ts'
 }
 const dshResolveAlias = Object.fromEntries(Object.entries(dshAliases).map(([name, relativePath]) => [name, resolve(dshRoot, relativePath)]))
 
