@@ -5,6 +5,6 @@ export const localMavenExecutor: MavenExecutor = {
   name: 'maven',
   requiredCapabilities: ['java'],
   execute(context) {
-    return runMavenUnitTests(context.projectPath, context.signal)
+    return runMavenUnitTests(context.projectPath, context.signal, context.sandbox)
   }
 }

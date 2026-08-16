@@ -2,6 +2,17 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative } from 'node:path'
 import type { TestCase } from './router.js'
+import { assertInsideProject, sandboxEnvironment } from './sandbox.js'
+
+function spawnSandboxed(
+  sandbox: { confine(argv: readonly string[], policy: unknown): { argv: string[] } } | undefined,
+  command: string,
+  args: string[],
+  options: import('node:child_process').SpawnSyncOptions
+): import('node:child_process').SpawnSyncReturns<string> {
+  const argv = sandbox ? sandbox.confine([command, ...args], { mode: 'workspace-write', workspaceRoot: String(options.cwd ?? process.cwd()) }).argv : [command, ...args]
+  return spawnSync(argv[0] ?? command, argv.slice(1), options) as import('node:child_process').SpawnSyncReturns<string>
+}
 
 export interface NodeTestOutcome {
   ok: boolean
@@ -179,20 +190,23 @@ function parseVitestStats(raw: string): { tests: number; pass: number; fail: num
 }
 
 /** 独立重跑 node 单元测试（真实执行，不信任 Agent 返回的数字）。 */
-export function runNodeUnitTests(projectPath: string): NodeTestOutcome {
+export function runNodeUnitTests(projectPath: string, sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }): NodeTestOutcome {
+  assertInsideProject(projectPath, projectPath)
   const script = packageTestScript(projectPath)
   const result = script
-    ? spawnSync(process.platform === 'win32' ? 'cmd.exe' : 'npm', process.platform === 'win32' ? ['/d', '/s', '/c', 'npm test'] : ['test'], {
+    ? spawnSandboxed(sandbox, process.platform === 'win32' ? 'cmd.exe' : 'npm', process.platform === 'win32' ? ['/d', '/s', '/c', 'npm test'] : ['test'], {
         cwd: projectPath,
         encoding: 'utf8',
         timeout: 180_000,
-        windowsHide: true
+        windowsHide: true,
+        env: sandboxEnvironment()
       })
-    : spawnSync('node', ['--test', '--experimental-test-coverage'], {
+    : spawnSandboxed(sandbox, 'node', ['--test', '--experimental-test-coverage'], {
     cwd: projectPath,
     encoding: 'utf8',
     timeout: 120_000,
-    windowsHide: true
+    windowsHide: true,
+    env: sandboxEnvironment()
     })
   const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
   if (script) {
@@ -242,8 +256,8 @@ export function parseSurefireSummary(content: string): { tests: number; fail: nu
 }
 
 /** 独立重跑 Maven 单元测试，从 surefire 报告解析结果（覆盖率未配置时为 null）。 */
-export async function runMavenUnitTests(projectPath: string, signal?: AbortSignal): Promise<MavenTestOutcome> {
-  return runMavenCommand(projectPath, mavenCommandSpec(projectPath), signal)
+export async function runMavenUnitTests(projectPath: string, signal?: AbortSignal, sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }): Promise<MavenTestOutcome> {
+  return runMavenCommand(projectPath, mavenCommandSpec(projectPath), signal, sandbox)
 }
 
 export function mavenCommandSpec(projectPath: string, platform: NodeJS.Platform = process.platform): MavenCommandSpec {
@@ -253,8 +267,14 @@ export function mavenCommandSpec(projectPath: string, platform: NodeJS.Platform 
 }
 
 /** Execute one Maven command and normalize process, Surefire and cancellation outcomes. */
-export async function runMavenCommand(projectPath: string, spec: MavenCommandSpec, signal?: AbortSignal): Promise<MavenTestOutcome> {
+export async function runMavenCommand(projectPath: string, spec: MavenCommandSpec, signal?: AbortSignal, sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }): Promise<MavenTestOutcome> {
   signal?.throwIfAborted()
+  assertInsideProject(projectPath, spec.cwd)
+  const command = sandbox
+    ? sandbox.confine([spec.command, ...spec.args], { mode: 'workspace-write', workspaceRoot: projectPath }).argv
+    : [spec.command, ...spec.args]
+  const commandName = command[0] ?? spec.command
+  const commandArgs = command.slice(1)
   const MAX_OUTPUT = 1_000_000
   let raw = ''
   let outputTruncated = false
@@ -265,7 +285,7 @@ export async function runMavenCommand(projectPath: string, spec: MavenCommandSpe
       outputTruncated = true
     }
   }
-  const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: scrubExecutionEnvironment(), windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(commandName, commandArgs, { cwd: spec.cwd, env: scrubExecutionEnvironment(), windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
   child.stdout.on('data', append)
   child.stderr.on('data', append)
   let aborted = false
@@ -592,13 +612,13 @@ function relativeToProject(projectPath: string, filePath: string | undefined): s
   return relative(projectPath, absolute).replace(/\\/g, '/')
 }
 
-function runProjectPlaywright(projectPath: string, cli: string, options: UiRunOptions): NodeTestOutcome {
+function runProjectPlaywright(projectPath: string, cli: string, options: UiRunOptions, sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }): NodeTestOutcome {
   const projectCli = join(projectPath, 'node_modules', '@playwright', 'test', 'cli.js')
   const resolvedCli = existsSync(projectCli) ? projectCli : cli
   const entryUrl = options.entryUrl?.trim() ? options.entryUrl : undefined
-  const runEnv: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}) }
+  const runEnv: NodeJS.ProcessEnv = { ...sandboxEnvironment(process.env), ...(options.env ?? {}) }
   if (entryUrl) runEnv.TEST_AGENT_UI_ENTRY_URL = entryUrl
-  const result = spawnSync('node', [resolvedCli, 'test', '--reporter=json', '--trace=on'], {
+  const result = spawnSandboxed(sandbox, 'node', [resolvedCli, 'test', '--reporter=json', '--trace=on'], {
     cwd: projectPath,
     encoding: 'utf8',
     timeout: 300_000,
@@ -642,7 +662,7 @@ function runProjectPlaywright(projectPath: string, cli: string, options: UiRunOp
   }
 }
 
-function runGenericPlaywrightSmoke(projectPath: string, cli: string, options: UiRunOptions): NodeTestOutcome {
+function runGenericPlaywrightSmoke(projectPath: string, cli: string, options: UiRunOptions, sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }): NodeTestOutcome {
   const stamp = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const scaffoldRoot = join(process.cwd(), '.test-agent-pw', stamp)
   const screenshotDir = join(projectPath, '.test-agent', 'screenshots', stamp)
@@ -735,9 +755,9 @@ test('frontend loads, fills and clicks', async ({ page }) => {
 })
 `, 'utf8')
   try {
-    const runEnv: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}), TEST_AGENT_SCREENSHOT_DIR: screenshotDir }
+    const runEnv: NodeJS.ProcessEnv = { ...sandboxEnvironment(process.env), ...(options.env ?? {}), TEST_AGENT_SCREENSHOT_DIR: screenshotDir }
     if (entryUrl) runEnv.TEST_AGENT_UI_ENTRY_URL = entryUrl
-    const result = spawnSync('node', [cli, 'test', '--config', join(scaffoldRoot, 'pw.config.js')], {
+    const result = spawnSandboxed(sandbox, 'node', [cli, 'test', '--config', join(scaffoldRoot, 'pw.config.js')], {
       cwd: scaffoldRoot,
       encoding: 'utf8',
       timeout: 300_000,
@@ -809,10 +829,11 @@ test('frontend loads, fills and clicks', async ({ page }) => {
 }
 
 /** Independent Playwright UI verification: prefer the project's own config/tests, fall back to a generic smoke. */
-export function runPlaywrightUiTests(projectPath: string, options: UiRunOptions = {}): NodeTestOutcome {
+export function runPlaywrightUiTests(projectPath: string, options: UiRunOptions = {}, sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }): NodeTestOutcome {
+  assertInsideProject(projectPath, projectPath)
   const cli = resolveBundledPlaywrightCli()
   const config = findPlaywrightConfig(projectPath)
-  return config ? runProjectPlaywright(projectPath, cli, options) : runGenericPlaywrightSmoke(projectPath, cli, options)
+  return config ? runProjectPlaywright(projectPath, cli, options, sandbox) : runGenericPlaywrightSmoke(projectPath, cli, options, sandbox)
 }
 
 /** 统计测试文件数与“含断言”的文件数（MVP 静态抽检，后续可换变异测试）。 */

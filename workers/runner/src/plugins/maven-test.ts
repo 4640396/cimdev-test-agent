@@ -21,7 +21,7 @@ export const mavenTestPlugin: WorkerPlugin<'maven_test', MavenTestInput, MavenTe
       return { executed: false, required: false, artifact: null, ok: true, tests: 0, pass: 0, fail: 0, coverage: null, compileError: false, raw: '', exitCode: null, signal: null, timedOut: false, aborted: false, outputTruncated: false }
     }
     const executor = context.executors.resolve<MavenTestOutcome>('maven', context.capabilities)
-    const outcome = await executor.execute({ projectPath: context.projectPath, signal: context.signal })
+    const outcome = await executor.execute({ projectPath: context.projectPath, signal: context.signal, sandbox: context.sandbox })
     const absolute = join(context.projectPath, '.test-agent', 'runs', context.executionId, 'maven-test.log')
     mkdirSync(dirname(absolute), { recursive: true })
     writeFileSync(absolute, outcome.raw, 'utf8')

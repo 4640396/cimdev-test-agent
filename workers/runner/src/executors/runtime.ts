@@ -3,6 +3,7 @@ import type { MavenTestOutcome } from '../validator.js'
 export interface TestExecutorContext {
   projectPath: string
   signal: AbortSignal
+  sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }
 }
 
 export interface TestExecutorProvider<Result> {

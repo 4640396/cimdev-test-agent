@@ -11,9 +11,15 @@ declare module '@cimdev/harness/cordis' {
     storage: any
     storageDomain: any
     workspaceRegistry: any
+    sandbox: any
     provide(...args: unknown[]): void
   }
 }
+
+declare module '@cimdev/harness/dsh-sandbox-local' {
+  export default class LocalSandboxProvider {}
+}
+
 
 declare module '@cimdev/harness/dsh-session' {
   export function SessionId(id: string): any

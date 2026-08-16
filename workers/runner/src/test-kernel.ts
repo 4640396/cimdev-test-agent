@@ -62,6 +62,7 @@ export interface TestKernelSessionContext {
   pluginRuntime: WorkerPluginRuntime
   executors: TestExecutorRegistry
   runEvents: RunEventStore
+  sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }
   signal: AbortSignal
   emit(event: AgentEvent): void | Promise<void>
 }
@@ -133,6 +134,7 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     capabilities: executionCapabilities,
     executors,
     events: runEvents,
+    sandbox: context.sandbox,
     signal,
     emit
   }
@@ -189,15 +191,15 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     ? executionCapabilities.includes('java')
       ? mavenOutcome
       : executionCapabilities.includes('node')
-        ? runNodeUnitTests(projectPath)
+        ? runNodeUnitTests(projectPath, context.sandbox)
         : null
     : null
   const uiOutcome = input.testTypes.includes('ui') && executionCapabilities.includes('playwright')
-    ? runPlaywrightUiTests(projectPath, { entryUrl: input.uiEntryUrl, env: input.environment })
+    ? runPlaywrightUiTests(projectPath, { entryUrl: input.uiEntryUrl, env: input.environment }, context.sandbox)
     : null
   const regressionTool = executionCapabilities.includes('java') ? 'java' : executionCapabilities.includes('node') ? 'node' : null
   const regressionOutcome = input.testTypes.includes('regression') && regressionTool
-    ? (regressionTool === 'java' ? mavenOutcome : (unitOutcome ?? runNodeUnitTests(projectPath)))
+    ? (regressionTool === 'java' ? mavenOutcome : (unitOutcome ?? runNodeUnitTests(projectPath, context.sandbox)))
     : null
 
   finishTimelineStage('生成测试', 'passed', `测试计划 ${plan.meta.count} 条`)

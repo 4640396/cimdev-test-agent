@@ -8,6 +8,7 @@ export interface WorkerPluginContext {
   capabilities: readonly string[]
   executors: TestExecutorRegistry
   events: RunEventStore
+  sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }
   signal: AbortSignal
   emit(event: AgentEvent): void | Promise<void>
 }
