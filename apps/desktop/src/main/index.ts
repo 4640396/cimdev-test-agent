@@ -128,7 +128,7 @@ function detectTestTypes(projectPath: string): TestType[] {
 function reportSummaryText(snapshot: TaskSnapshot): string {
   const report = snapshot.report
   const lines = [
-    'CIMDEV 测试报告',
+    'Test Agent 测试报告',
     `任务：${snapshot.taskId}`,
     `状态：${snapshot.status}`,
     `通过：${report?.passed ?? '--'}`,
@@ -146,7 +146,7 @@ function reportSummaryText(snapshot: TaskSnapshot): string {
 
 function reportMarkdown(snapshot: TaskSnapshot): string {
   const report = snapshot.report
-  let md = `# CIMDEV 测试报告\n\n- 任务：\`${snapshot.taskId}\`\n- 状态：${snapshot.status}\n`
+  let md = `# Test Agent 测试报告\n\n- 任务：\`${snapshot.taskId}\`\n- 状态：${snapshot.status}\n`
   if (report) {
     md += `- 通过：${report.passed}\n- 失败：${report.failed}\n- 覆盖率：${report.coverage === null ? 'N/A' : `${report.coverage}%`}\n`
     if (report.gate) md += `- 质量门禁：${report.gate.passed ? '通过' : '未通过'}\n`
@@ -196,7 +196,7 @@ function reportHtml(snapshot: TaskSnapshot): string {
     ? `<h2>执行录像 / Trace</h2><ul><li>录像：${escapeHtml(report.recording.video ?? '-')}</li><li>Trace：${escapeHtml(report.recording.trace ?? '-')}</li></ul>`
     : ''
   const fixCards = (report?.fixes ?? []).map((item) => `<div style="margin:8px 0;padding:10px;border:1px solid #ddd;border-radius:8px"><b>${escapeHtml(item.title)}</b><div>${escapeHtml(item.file)} · ${escapeHtml(item.severity)}</div><p>${escapeHtml(item.summary)}</p><div>修复前<pre>${escapeHtml(item.beforeCode ?? '-')}</pre></div><div>修复后<pre>${escapeHtml(item.afterCode ?? '-')}</pre></div></div>`).join('')
-  return `<!doctype html><meta charset="utf-8"><title>CIMDEV 测试报告</title><body style="font-family:system-ui"><h1>CIMDEV 测试报告</h1><p>通过 ${report?.passed ?? '--'} · 失败 ${report?.failed ?? '--'} · 覆盖率 ${coverageText}</p>${report?.summary ? `<p>${escapeHtml(report.summary)}</p>` : ''}<h2>测试计划</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>优先级</th><th>场景</th><th>预期</th></tr>${caseRows}</table><h2>失败用例</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>错误</th><th>建议</th></tr>${failedRows}</table>${report?.timeline?.length ? `<h2>执行时间线</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>阶段</th><th>状态</th><th>耗时</th><th>说明</th></tr>${timelineRows}</table>` : ''}${report?.uiSteps?.length ? `<h2>UI 执行步骤</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>步骤</th><th>状态</th><th>耗时</th><th>错误</th></tr>${uiStepRows}</table>` : ''}${recordingHtml}${report?.fixes?.length ? `<h2>建议修复</h2>${fixCards}` : ''}</body>`
+  return `<!doctype html><meta charset="utf-8"><title>Test Agent 测试报告</title><body style="font-family:system-ui"><h1>Test Agent 测试报告</h1><p>通过 ${report?.passed ?? '--'} · 失败 ${report?.failed ?? '--'} · 覆盖率 ${coverageText}</p>${report?.summary ? `<p>${escapeHtml(report.summary)}</p>` : ''}<h2>测试计划</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>优先级</th><th>场景</th><th>预期</th></tr>${caseRows}</table><h2>失败用例</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>错误</th><th>建议</th></tr>${failedRows}</table>${report?.timeline?.length ? `<h2>执行时间线</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>阶段</th><th>状态</th><th>耗时</th><th>说明</th></tr>${timelineRows}</table>` : ''}${report?.uiSteps?.length ? `<h2>UI 执行步骤</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>步骤</th><th>状态</th><th>耗时</th><th>错误</th></tr>${uiStepRows}</table>` : ''}${recordingHtml}${report?.fixes?.length ? `<h2>建议修复</h2>${fixCards}` : ''}</body>`
 }
 
 function printReportPdf(html: string): Promise<Buffer> {
@@ -232,7 +232,7 @@ function createWindow(): void {
     minHeight: 720,
     show: false,
     backgroundColor: '#f4f6fa',
-    title: 'CIMDEV Test Agent',
+    title: 'Test Agent',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
@@ -314,7 +314,7 @@ function buildMenu(): void {
     {
       label: '帮助',
       submenu: [
-        { role: 'about', label: '关于 CIMDEV 测试 Agent' }
+        { role: 'about', label: '关于 Test Agent' }
       ]
     }
   ]
