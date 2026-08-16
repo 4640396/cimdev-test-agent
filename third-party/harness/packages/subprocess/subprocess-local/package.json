@@ -1,0 +1,54 @@
+{
+  "name": "@cimdev/harness/dsh-subprocess-local",
+  "description": "Local-subprocess implementation of the DeepSeek Harness subprocess seam",
+  "version": "0.1.0-rc.5",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "packages/subprocess/subprocess-local"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/invariant.js",
+    "scripts/ensure-spawn-helper.mjs",
+    "lib/types/**/*.d.ts"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/ensure-spawn-helper.mjs"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@cimdev/harness/dsh-invariants": "workspace:^",
+    "@cimdev/harness/dsh-subprocess": "workspace:^",
+    "@cimdev/harness/dsh-timeout": "workspace:^",
+    "@cimdev/harness/cordis": "workspace:^"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@cimdev/harness/dsh-invariants": "workspace:^",
+    "@cimdev/harness/dsh-loader-smoke": "workspace:^",
+    "@cimdev/harness/dsh-subprocess": "workspace:^",
+    "@cimdev/harness/dsh-timeout": "workspace:^",
+    "@cimdev/harness/cordis": "workspace:^"
+  }
+}

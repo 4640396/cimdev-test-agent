@@ -2,7 +2,7 @@
 // handled by Vite/Vitest aliases; these declarations keep our strict TS build
 // from typechecking the entire upstream Cordis source tree.
 
-declare module '@deepseek-ai/cordis' {
+declare module '@cimdev/harness/cordis' {
   export class Context {
     plugin(...args: unknown[]): Promise<any>
     fiber: { dispose(): void | Promise<void> }
@@ -15,30 +15,30 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-declare module '@deepseek-ai/dsh-session' {
+declare module '@cimdev/harness/dsh-session' {
   export function SessionId(id: string): any
   export type Session = any
   export type SessionEvent = any
   export default class SessionStore {}
 }
 
-declare module '@deepseek-ai/dsh-session-persistence-jsonl' {
+declare module '@cimdev/harness/dsh-session-persistence-jsonl' {
   export default class JsonlSessionPersistence {}
 }
 
-declare module '@deepseek-ai/dsh-storage' {
+declare module '@cimdev/harness/dsh-storage' {
   export class Storage {}
   export default Storage
 }
 
-declare module '@deepseek-ai/dsh-storage-domain' {
+declare module '@cimdev/harness/dsh-storage-domain' {
   export default class StorageDomain {}
   export class DomainFacility {
     constructor(ctx: any, config: any)
   }
 }
 
-declare module '@deepseek-ai/dsh-storage-json' {
+declare module '@cimdev/harness/dsh-storage-json' {
   export const name: string
   export const inject: string[]
   export function apply(ctx: any, config: { root: string }): void
@@ -47,7 +47,7 @@ declare module '@deepseek-ai/dsh-storage-json' {
   }
 }
 
-declare module '@deepseek-ai/dsh-workspace' {
+declare module '@cimdev/harness/dsh-workspace' {
   export function WorkspaceId(id: string): any
   export default class WorkspaceRegistry {}
 }
