@@ -1,5 +1,5 @@
 param(
-  [string]$SourceRoot = 'C:\works\deepseek-harness',
+  [string]$SourceRoot = 'C:\works\harness',
   [string]$DestRoot = 'C:\works\cimdev-test-agent\third-party\dsh'
 )
 

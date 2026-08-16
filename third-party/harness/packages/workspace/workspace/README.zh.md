@@ -1,4 +1,4 @@
-# @deepseek-ai/dsh-workspace
+# @cimdev/harness/dsh-workspace
 
 [English](README.md) | 中文
 
