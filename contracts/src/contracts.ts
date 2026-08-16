@@ -1,6 +1,8 @@
 export type TestType = 'unit' | 'regression' | 'ui'
 export type TaskStatus = 'idle' | 'queued' | 'planning' | 'running' | 'completed' | 'failed' | 'cancelled' | 'needsReview'
 export type LaneStatus = 'pending' | 'running' | 'passed' | 'failed'
+export type AppNavTarget = 'home' | 'history' | 'settings'
+export type AppMenuCommand = 'start' | 'cancel' | 'exportMarkdown' | 'exportHtml' | 'copySummary' | 'selectKnowledgeRoots'
 
 export interface TaskInput {
   projectPath: string
@@ -63,6 +65,9 @@ export interface TestCaseRecord {
   priority: 'low' | 'medium' | 'high'
   layer?: 'api' | 'ui' | 'unit'
   source?: string
+  target?: string
+  assertions?: number
+  coverageDelta?: string
 }
 
 export interface RoutingRecord {
@@ -92,6 +97,7 @@ export interface TaskSnapshot {
     passed: number
     failed: number
     coverage: number | null
+    branchCoverage?: number | null
     durationMs?: number
     summary?: string
     cases?: TestCaseRecord[]
@@ -102,6 +108,7 @@ export interface TaskSnapshot {
     }
     routing?: RoutingRecord[]
     failedCases?: FailedCaseRecord[]
+    riskPoints?: Array<{ severity: 'high' | 'medium' | 'low'; file: string; message: string; suggestion?: string }>
     screenshots?: string[]
     metrics?: {
       compileRate: number
@@ -127,6 +134,15 @@ export interface TaskSnapshot {
       reason?: string
     }
   }
+}
+
+export interface HistoryRecord {
+  id: string
+  projectName: string
+  projectPath: string
+  version: string
+  savedAt: string
+  snapshot: TaskSnapshot
 }
 
 export interface ExportResult {
@@ -172,6 +188,13 @@ export interface DesktopApi {
   subscribeTask(listener: (snapshot: TaskSnapshot) => void): () => void
   exportReport(format: 'markdown' | 'html' | 'json', snapshot: TaskSnapshot): Promise<ExportResult>
   copyReportSummary(snapshot: TaskSnapshot): Promise<CopyResult>
+  copyText(text: string): Promise<CopyResult>
+  getHistory(): Promise<HistoryRecord[]>
+  saveHistory(record: HistoryRecord): Promise<void>
+  clearHistory(): Promise<void>
+  selectKnowledgeRoots(): Promise<string[]>
+  onNavigate(listener: (target: AppNavTarget) => void): () => void
+  onCommand(listener: (command: AppMenuCommand) => void): () => void
 }
 
 export interface LocalHostStatus {

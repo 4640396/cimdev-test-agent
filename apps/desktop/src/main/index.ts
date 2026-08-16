@@ -1,11 +1,10 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from 'electron'
-import { existsSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { basename } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, parse } from 'node:path'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
-import type { LocalHostStatus, TaskInput, TaskSnapshot, TestType } from '../../../../contracts/src/contracts.js'
+import type { AppMenuCommand, AppNavTarget, HistoryRecord, LocalHostStatus, TaskInput, TaskSnapshot, TestType } from '../../../../contracts/src/contracts.js'
 import { createStdioHostIO, LocalHostClient } from './local-host-client.js'
 
 let mainWindow: BrowserWindow | null = null
@@ -14,6 +13,24 @@ const serverUrl = (process.env.TEST_AGENT_SERVER_URL ?? 'http://127.0.0.1:8088')
 const taskWatchers = new Map<string, NodeJS.Timeout>()
 let knowledgeRoots: string[] = []
 let localHostClient: LocalHostClient | null = null
+
+function historyFilePath(): string {
+  return join(app.getPath('userData'), 'test-agent-history.json')
+}
+
+function readHistory(): HistoryRecord[] {
+  try {
+    const parsed = JSON.parse(readFileSync(historyFilePath(), 'utf8')) as unknown
+    return Array.isArray(parsed) ? (parsed as HistoryRecord[]) : []
+  } catch {
+    return []
+  }
+}
+
+function writeHistory(records: HistoryRecord[]): void {
+  mkdirSync(dirname(historyFilePath()), { recursive: true })
+  writeFileSync(historyFilePath(), JSON.stringify(records, null, 2), 'utf8')
+}
 
 interface ServerTask {
   id: string
@@ -72,7 +89,8 @@ function ensureLocalHostClient(): LocalHostClient {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
     TEST_AGENT_HOST_CAPABILITIES: process.env.TEST_AGENT_HOST_CAPABILITIES ?? 'windows,node,codex-cli,go,java,vue,playwright',
-    TEST_AGENT_AI_MODE: process.env.TEST_AGENT_AI_MODE ?? 'true'
+    TEST_AGENT_AI_MODE: process.env.TEST_AGENT_AI_MODE ?? 'true',
+    TEST_AGENT_ALLOWED_PROJECT_ROOTS: process.env.TEST_AGENT_ALLOWED_PROJECT_ROOTS ?? parse(app.getAppPath()).root
   }
   const io = createStdioHostIO(process.execPath, [hostCliPath], { cwd: process.cwd(), env })
   const client = new LocalHostClient(io)
@@ -176,57 +194,91 @@ function createWindow(): void {
   else mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
+function sendMenuNavigation(target: AppNavTarget): void {
+  mainWindow?.webContents.send('menu:navigate', target)
+}
+
+function sendMenuCommand(command: AppMenuCommand): void {
+  mainWindow?.webContents.send('menu:command', command)
+}
+
 function buildMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
-      label: 'File',
+      label: '工作台',
       submenu: [
-        { role: 'quit', label: 'Exit' }
-      ]
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' }, { role: 'redo' },
+        { label: '首页', accelerator: 'CmdOrCtrl+1', click: () => sendMenuNavigation('home') },
+        { label: '运行历史', accelerator: 'CmdOrCtrl+2', click: () => sendMenuNavigation('history') },
+        { label: '配置', accelerator: 'CmdOrCtrl+,', click: () => sendMenuNavigation('settings') },
         { type: 'separator' },
-        { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }
+        { label: '发起真实测试', accelerator: 'CmdOrCtrl+Enter', click: () => sendMenuCommand('start') },
+        { label: '取消任务', click: () => sendMenuCommand('cancel') }
       ]
     },
     {
-      label: 'View',
+      label: '文件',
       submenu: [
-        { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
+        { label: '导出 Markdown', click: () => sendMenuCommand('exportMarkdown') },
+        { label: '导出 HTML', click: () => sendMenuCommand('exportHtml') },
+        { label: '复制摘要', click: () => sendMenuCommand('copySummary') },
         { type: 'separator' },
-        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+        { role: 'quit', label: '退出' }
+      ]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
         { type: 'separator' },
-        { role: 'togglefullscreen' }
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'selectAll', label: '全选' }
       ]
     },
     {
-      label: 'Window',
+      label: '视图',
       submenu: [
-        { role: 'minimize' }, { role: 'zoom' }, { role: 'close' }
+        { role: 'reload', label: '重新加载' },
+        { role: 'forceReload', label: '强制重新加载' },
+        { role: 'toggleDevTools', label: '开发者工具' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: '重置缩放' },
+        { role: 'zoomIn', label: '放大' },
+        { role: 'zoomOut', label: '缩小' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: '切换全屏' }
       ]
     },
     {
-      label: 'Help',
+      label: '窗口',
       submenu: [
-        { role: 'about', label: 'About CIMDEV Test Agent' }
+        { role: 'minimize', label: '最小化' },
+        { role: 'zoom', label: '缩放' },
+        { role: 'close', label: '关闭' }
       ]
     },
     {
-      label: 'Configure',
+      label: '配置',
       submenu: [
+        { label: '覆盖率目标…', click: () => sendMenuNavigation('settings') },
         {
-          label: 'Knowledge Base Directory…',
+          label: '知识库目录…',
           click: async () => {
             if (!mainWindow) return
-            const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'multiSelections'], title: 'Select knowledge base directories' })
+            const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'multiSelections'], title: '选择知识库目录' })
             if (result.canceled) return
             knowledgeRoots = result.filePaths
             mainWindow.webContents.send('config:changed', knowledgeRoots)
           }
         }
+      ]
+    },
+    {
+      label: '帮助',
+      submenu: [
+        { role: 'about', label: '关于 CIMDEV 测试 Agent' }
       ]
     }
   ]
@@ -237,6 +289,26 @@ function buildMenu(): void {
 app.whenReady().then(() => {
   buildMenu()
   ipcMain.handle('config:getKnowledgeRoots', () => knowledgeRoots)
+  ipcMain.handle('config:selectKnowledgeRoots', async () => {
+    if (!mainWindow) return knowledgeRoots
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'multiSelections'],
+      title: 'Select knowledge base directories'
+    })
+    if (result.canceled) return knowledgeRoots
+    knowledgeRoots = result.filePaths
+    mainWindow.webContents.send('config:changed', knowledgeRoots)
+    return knowledgeRoots
+  })
+  ipcMain.handle('history:get', () => readHistory())
+  ipcMain.handle('history:save', (_event, record: HistoryRecord) => {
+    const records = readHistory().filter((item) => item.id !== record.id)
+    records.unshift(record)
+    writeHistory(records.slice(0, 100))
+  })
+  ipcMain.handle('history:clear', () => {
+    writeHistory([])
+  })
   ipcMain.handle('project:select', async () => {
     if (!mainWindow) return null
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
@@ -280,6 +352,11 @@ app.whenReady().then(() => {
 
   ipcMain.handle('report:copy', async (_event, snapshot: TaskSnapshot) => {
     clipboard.writeText(reportSummaryText(snapshot))
+    return { copied: true }
+  })
+
+  ipcMain.handle('clipboard:write', async (_event, text: string) => {
+    clipboard.writeText(String(text ?? ''))
     return { copied: true }
   })
 

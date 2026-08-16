@@ -38,6 +38,7 @@ function log(kind, payload) {
   } else if (kind === 'run-result') {
     const report = payload?.outcome?.report ?? payload?.outcome?.adapterResult?.report
     process.stdout.write(`RUN_RESULT passed=${report?.passed} failed=${report?.failed} coverage=${report?.coverage ?? 'N/A'} gate=${payload?.outcome?.gate?.passed}\n`)
+    process.stdout.write(`BRANCH_COVERAGE=${report?.branchCoverage ?? 'N/A'} RISK_POINTS=${(report?.riskPoints ?? []).length} FAILED_CASES=${(report?.failedCases ?? []).length}\n`)
   } else if (kind === 'run-error') {
     process.stdout.write(`RUN_ERROR ${payload?.error}\n`)
   } else if (kind === 'error') {

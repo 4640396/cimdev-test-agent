@@ -44,15 +44,29 @@ const RESULT_SCHEMA = {
           expected: { type: 'string' },
           priority: { type: 'string', enum: ['low', 'medium', 'high'] },
           layer: { type: 'string', enum: ['api', 'ui', 'unit'] },
-          source: { type: 'string' }
+          source: { type: 'string' },
+          target: { type: 'string' },
+          assertions: { type: 'integer', minimum: 0 },
+          coverageDelta: { type: 'string' }
         },
-        required: ['id', 'title', 'scenario', 'steps', 'expected', 'priority', 'layer', 'source'],
-        additionalProperties: false
+        required: ['id', 'title', 'scenario', 'steps', 'expected', 'priority', 'layer', 'source', 'target', 'assertions', 'coverageDelta']
+      }
+    },
+    riskPoints: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+          file: { type: 'string' },
+          message: { type: 'string' },
+          suggestion: { type: 'string' }
+        },
+        required: ['severity', 'file', 'message', 'suggestion']
       }
     }
   },
-  required: ['lanes', 'report', 'artifacts', 'cases'],
-  additionalProperties: false
+  required: ['lanes', 'report', 'artifacts', 'cases', 'riskPoints']
 } as const
 
 function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: string): string {
@@ -66,13 +80,15 @@ function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: stri
     '执行要求：',
     '1. 识别项目技术栈、模块、现有测试框架和可用构建命令。',
     '2. 仅为选中的测试类型生成或补强必要测试；尽量不修改生产代码。',
-    '2.1 先生成结构化测试用例清单并放入返回结果的 cases 字段：每例包含 id、title、scenario、steps（数组）、expected、priority(low|medium|high)、layer(api|ui|unit)、source（来源文档或模块）。',
+    '2.1 先生成结构化测试用例清单并放入返回结果的 cases 字段：每例包含 id、title、scenario、steps（数组）、expected、priority(low|medium|high)、layer(api|ui|unit)、source（来源文档或模块）、target（被测方法或函数）、assertions（真实断言数量）、coverageDelta（该用例新增覆盖，如"+18行/+4分支"）。',
     '2.2 将用例清单另存为项目内 .test-agent/cases/cases-<时间戳>.json。',
     '3. 必须调用项目真实工具执行测试，例如 go test、Maven、Gradle、npm、Vitest 或 Playwright。',
     '3.1 这是硬性要求：若项目没有任何测试文件，必须创建最小可编译的 JUnit（或对应框架）测试，覆盖至少 1-2 个核心服务或工具类，并真实运行它们；不得以“无测试设施”为由跳过生成。',
+    '3.2 同时生成 riskPoints 数组，描述未被覆盖或风险较高的模块：每项包含 severity(high|medium|low)、file（文件或方法）、message（具体风险）、suggestion（建议修复）。',
     '4. 单元测试必须编译、执行并包含有业务意义的断言；仅判空断言不能视为有效用例。',
     '5. 回归测试必须基于真实核心场景或已有回归基线；没有可执行条件时标记失败并说明原因。',
     '6. UI 测试必须真实启动或连接应用并执行浏览器操作；成功执行时保存截图，否则标记失败。',
+    '6.1 UI 测试优先使用项目已有 Playwright 配置；若需要浏览器，优先使用本机微软 Edge（Playwright channel: "msedge"），不要检查或安装 Playwright 自带浏览器（ms-playwright）。',
     '7. passed、failed 和 coverage 只能来自真实测试工具输出；没有覆盖率数据时返回 null。',
     '8. 将测试计划、原始日志和综合报告保存到指定产物目录。',
     '9. artifacts 只返回当前项目内确实存在的相对路径。',
@@ -112,6 +128,9 @@ function validateResult(value: unknown, projectPath: string): AgentRunResult {
   const result = value as AgentRunResult
   if (!Array.isArray(result.lanes) || !result.report || !Array.isArray(result.artifacts)) {
     throw new Error('Codex CLI 测试结果结构不完整')
+  }
+  if (result.riskPoints !== undefined && !Array.isArray(result.riskPoints)) {
+    throw new Error('Codex CLI riskPoints 必须是数组')
   }
   return result
 }

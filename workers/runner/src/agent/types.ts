@@ -17,6 +17,7 @@ export interface AgentRunResult {
   report: { passed: number; failed: number; coverage: number | null }
   artifacts: string[]
   cases?: unknown[]
+  riskPoints?: unknown[]
 }
 
 export interface AgentAdapter {

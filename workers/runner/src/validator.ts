@@ -12,6 +12,9 @@ export interface NodeTestOutcome {
   compileError: boolean
   raw: string
   screenshots?: string[]
+  branchCoverage?: number | null
+  failedCases?: Array<{ name: string; layer: string; error: string }>
+  riskPoints?: Array<{ severity: 'high' | 'medium' | 'low'; file: string; message: string; suggestion?: string }>
 }
 
 export interface QualityMetrics {
@@ -64,6 +67,90 @@ function matchNumber(lines: string[], pattern: RegExp): number {
   return 0
 }
 
+interface NodeCoverageTable {
+  line: number | null
+  branch: number | null
+  files: Array<{ file: string; line: number; branch: number }>
+}
+
+function parseNodeCoverageTable(raw: string): NodeCoverageTable {
+  const files: NodeCoverageTable['files'] = []
+  let line: number | null = null
+  let branch: number | null = null
+  let currentDir = ''
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const text = rawLine.replace(/^\s*ℹ\s*/, '').trim()
+    if (!text.includes('|') || /^-+/.test(text)) continue
+    const columns = text.split('|').map((item) => item.trim())
+    if (columns.length < 4) continue
+    const name = columns[0]
+    const linePct = Number.parseFloat(columns[1])
+    const branchPct = Number.parseFloat(columns[2])
+    if (name.toLowerCase() === 'all files') {
+      line = Number.isFinite(linePct) ? linePct : null
+      branch = Number.isFinite(branchPct) ? branchPct : null
+      continue
+    }
+    if (!name || name === 'file') continue
+    if (!Number.isFinite(linePct) && !Number.isFinite(branchPct)) {
+      currentDir = name
+      continue
+    }
+    files.push({ file: currentDir ? `${currentDir}/${name}` : name, line: linePct, branch: branchPct })
+  }
+  return { line, branch, files }
+}
+
+function parseNodeFailures(raw: string): Array<{ name: string; layer: string; error: string }> {
+  const failures: Array<{ name: string; layer: string; error: string }> = []
+  let current: { name: string; layer: string; error: string } | null = null
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.replace(/^\s*ℹ\s*/, '')
+    const failMatch = /^✖\s+(.+?)(?:\s+\(\d+(?:\.\d+)?ms\))?$/.exec(line.trim())
+    if (failMatch) {
+      if (current) failures.push(current)
+      current = { name: failMatch[1].trim(), layer: 'unit', error: '' }
+      continue
+    }
+    if (!current) continue
+    if (/^✔\s|^✖\s|^ℹ\s/.test(line.trim()) && !/^\s/.test(rawLine)) {
+      failures.push(current)
+      current = null
+      continue
+    }
+    if (line.trim() && (/^\s/.test(rawLine) || /Error|Assertion|expected|actual|at /.test(line))) {
+      current.error += (current.error ? '\n' : '') + line.trimEnd()
+    }
+  }
+  if (current) failures.push(current)
+  return failures
+}
+
+function buildNodeRiskPoints(table: NodeCoverageTable, failures: Array<{ name: string; layer: string; error: string }>): Array<{ severity: 'high' | 'medium' | 'low'; file: string; message: string; suggestion?: string }> {
+  const risks: Array<{ severity: 'high' | 'medium' | 'low'; file: string; message: string; suggestion?: string }> = []
+  for (const file of table.files) {
+    if (Number.isFinite(file.branch) && file.branch < 80) {
+      risks.push({
+        severity: file.branch < 50 ? 'high' : 'medium',
+        file: file.file,
+        message: `分支覆盖率 ${file.branch}%，存在未覆盖分支。`,
+        suggestion: '补充边界与异常分支测试。'
+      })
+    } else if (Number.isFinite(file.line) && file.line < 80) {
+      risks.push({
+        severity: 'medium',
+        file: file.file,
+        message: `行覆盖率 ${file.line}%，存在未覆盖代码。`,
+        suggestion: '补充核心逻辑测试。'
+      })
+    }
+  }
+  for (const failure of failures) {
+    risks.push({ severity: 'high', file: failure.name, message: `测试失败：${failure.error.split('\n')[0] || failure.name}`, suggestion: '修复断言或被测代码。' })
+  }
+  return risks.slice(0, 10)
+}
+
 /** 独立重跑 node 单元测试（真实执行，不信任 Agent 返回的数字）。 */
 export function runNodeUnitTests(projectPath: string): NodeTestOutcome {
   const result = spawnSync('node', ['--test', '--experimental-test-coverage'], {
@@ -77,17 +164,21 @@ export function runNodeUnitTests(projectPath: string): NodeTestOutcome {
   const tests = matchNumber(lines, /\btests\s+(\d+)/)
   const pass = matchNumber(lines, /\bpass\s+(\d+)/)
   const fail = matchNumber(lines, /\bfail\s+(\d+)/)
-  const coverageIndex = lines.findIndex((line) => /all files/.test(line))
-  let coverage: number | null = null
-  if (coverageIndex >= 0) {
-    const columns = lines[coverageIndex].split('|').map((item) => item.trim()).filter((item) => item.length > 0)
-    if (columns.length >= 2) {
-      const parsed = Number.parseFloat(columns[1])
-      if (Number.isFinite(parsed)) coverage = parsed
-    }
-  }
+  const coverageTable = parseNodeCoverageTable(raw)
+  const failedCases = parseNodeFailures(raw)
   const compileError = result.status !== 0 && /SyntaxError|Cannot find module|ERR_MODULE_NOT_FOUND/.test(raw)
-  return { ok: result.status === 0, tests, pass, fail, coverage, compileError, raw }
+  return {
+    ok: result.status === 0,
+    tests,
+    pass,
+    fail,
+    coverage: coverageTable.line,
+    compileError,
+    raw,
+    branchCoverage: coverageTable.branch,
+    failedCases,
+    riskPoints: buildNodeRiskPoints(coverageTable, failedCases)
+  }
 }
 
 /** 解析 surefire 报告的 Tests run / Failures / Errors 汇总行。 */

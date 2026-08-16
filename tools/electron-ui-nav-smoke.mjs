@@ -24,15 +24,15 @@ try {
     await window.locator('.back').waitFor({ state: 'visible', timeout: 10_000 })
   }
 
-  await window.locator('.plan-card').click()
+  await window.locator('.flow3-card:has-text("测试计划")').click()
   await assertDetail('测试计划')
   await window.locator('.back').click()
 
-  await window.locator('.dispatch-card').click()
+  await window.locator('.flow3-card:has-text("本机执行")').click()
   await assertDetail('执行过程')
   await window.locator('.back').click()
 
-  await window.locator('.report-card').click()
+  await window.locator('.flow3-card:has-text("测试报告")').click()
   await assertDetail('测试报告')
 
   console.log('UI_NAV_SMOKE_PASS true')

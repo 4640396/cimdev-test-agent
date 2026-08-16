@@ -24,6 +24,9 @@ export interface TestKernelReport {
   durationMs: number
   summary: string
   screenshots?: string[]
+  branchCoverage?: number | null
+  failedCases?: Array<{ name: string; layer: string; error: string; suggestion?: string }>
+  riskPoints?: Array<{ severity: 'high' | 'medium' | 'low'; file: string; message: string; suggestion?: string }>
   metrics: {
     compileRate: number
     execRate: number
@@ -251,6 +254,16 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     { plan, checks, coverageTarget: input.coverageTarget ?? 60, coverage, metrics }
   )
   runEvents.append('quality-gate/decided', { passed: gate.passed, reasons: gate.reasons, checks: gate.checks })
+  const aiRiskPoints = Array.isArray(adapterResult.riskPoints)
+    ? adapterResult.riskPoints
+        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+        .map((item) => ({
+          severity: (item.severity === 'high' || item.severity === 'medium' || item.severity === 'low' ? item.severity : 'medium') as 'high' | 'medium' | 'low',
+          file: String(item.file ?? ''),
+          message: String(item.message ?? ''),
+          ...(typeof item.suggestion === 'string' ? { suggestion: item.suggestion } : {})
+        }))
+    : []
   const report: TestKernelReport = {
     ...adapterResult.report,
     passed: totalPass,
@@ -261,6 +274,9 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
       ? `璐ㄩ噺闂ㄧ閫氳繃锛?{totalPass} 閫氳繃 / ${totalFail} 澶辫触锛岃鐩栫巼 ${coverage === null ? 'N/A' : `${coverage}%`}`
       : `璐ㄩ噺闂ㄧ鏈€氳繃锛?{gate.reason}`,
     screenshots: uiOutcome?.screenshots ?? [],
+    branchCoverage: unitOutcome && 'branchCoverage' in unitOutcome ? unitOutcome.branchCoverage : null,
+    failedCases: unitOutcome && 'failedCases' in unitOutcome ? unitOutcome.failedCases?.map((item) => ({ name: item.name, layer: item.layer, error: item.error })) : [],
+    riskPoints: aiRiskPoints.length > 0 ? aiRiskPoints : (unitOutcome && 'riskPoints' in unitOutcome ? unitOutcome.riskPoints : []),
     metrics: { ...metrics, knowledgeRate },
     gate,
     knowledge: knowledgeMeta,

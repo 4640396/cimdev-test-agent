@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>大厂测试 Agent 报告参考</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --panel: #fff; --line: #e6eaf1; --text: #17203a; --muted: #6b7486;
+    --green: #16a34a; --green-bg: #e9f9f0; --red: #dc2626; --red-bg: #feecec;
+    --amber: #d97706; --amber-bg: #fff6e6; --blue: #2563eb; --blue-bg: #eaf1ff;
+    --violet: #7c3aed;
+    font-family: "Microsoft YaHei", Inter, system-ui, sans-serif; color: var(--text); background: var(--bg);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-width: 1000px; min-height: 100vh; background: var(--bg); }
+  .topbar {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 28px; background: #fff; border-bottom: 1px solid var(--line);
+  }
+  .brand { font-weight: 800; font-size: 18px; }
+  .tabs { display: flex; gap: 8px; }
+  .tab { border: 1px solid var(--line); background: #fff; color: var(--muted); padding: 8px 14px; border-radius: 9px; cursor: pointer; font-size: 13px; }
+  .tab.active { border-color: var(--blue); color: var(--blue); background: var(--blue-bg); font-weight: 700; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 26px 28px 70px; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
+  .head h1 { margin: 0 0 6px; font-size: 24px; }
+  .head p { margin: 0; color: var(--muted); }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 999px; font-weight: 700; }
+  .badge.pass { background: var(--green-bg); color: var(--green); }
+  .badge.warn { background: var(--amber-bg); color: var(--amber); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; }
+  .grid { display: grid; gap: 14px; }
+  .stats { grid-template-columns: repeat(4, 1fr); }
+  .stat { padding: 16px; }
+  .stat .num { font-size: 27px; font-weight: 800; }
+  .stat .lbl { color: var(--muted); font-size: 13px; }
+  .green { color: var(--green); } .red { color: var(--red); } .amber { color: var(--amber); }
+  .section { margin-top: 22px; }
+  .section h2 { font-size: 16px; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+  th { background: #f8fafc; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  .bar { height: 9px; background: #eef2f7; border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--green); }
+  .bar.amber > div { background: var(--amber); }
+  .bar.red > div { background: var(--red); }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .step { padding: 12px 14px; }
+  .step.pass { border-left: 3px solid var(--green); }
+  .step.fail { border-left: 3px solid var(--red); }
+  .thumb { width: 130px; height: 86px; border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(135deg,#f8fafc,#eef2f7); display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+  .video { height: 230px; border: 1px dashed #cbd5e1; border-radius: 12px; display: grid; place-items: center; color: var(--muted); background: #f8fafc; }
+  .issue { padding: 14px; }
+  .severity { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+  .severity.high { background: var(--red-bg); color: var(--red); }
+  .severity.medium { background: var(--amber-bg); color: var(--amber); }
+  .severity.low { background: var(--blue-bg); color: var(--blue); }
+  pre { background: #0f172a; color: #dbeafe; border-radius: 10px; padding: 13px; font: 12px/1.6 Consolas, monospace; overflow: auto; }
+  .pill { display: inline-block; padding: 4px 9px; border-radius: 999px; font-size: 12px; background: #eef2f7; color: var(--muted); }
+  .footer { margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">大厂测试 Agent 报告参考</div>
+    <nav class="tabs">
+      <button class="tab active" data-view="unit">1 · 单元测试生成</button>
+      <button class="tab" data-view="e2e">2 · UI/E2E 自动化</button>
+      <button class="tab" data-view="agent">3 · 自主测试 Agent</button>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <!-- 1. 单元测试生成类 -->
+    <section class="view active" id="view-unit">
+      <div class="head">
+        <div><h1>Qodo / Diffblue Cover 风格 · 单元测试生成报告</h1><p>仓库 cimdev-test-agent · 分支 feature/checkout · PR #482</p></div>
+        <span class="badge pass">✓ 可合并</span>
+      </div>
+
+      <div class="grid stats">
+        <div class="card stat"><div class="num green">87%</div><div class="lbl">行覆盖率</div></div>
+        <div class="card stat"><div class="num">74%</div><div class="lbl">分支覆盖率</div></div>
+        <div class="card stat"><div class="num">92</div><div class="lbl">质量分</div></div>
+        <div class="card stat"><div class="num red">3</div><div class="lbl">风险点</div></div>
+      </div>
+
+      <div class="section"><h2>覆盖率</h2>
+        <div class="card" style="padding:16px">
+          <div class="row" style="justify-content:space-between"><span>行覆盖率</span><b>87%</b></div>
+          <div class="bar"><div style="width:87%"></div></div>
+          <div class="row" style="justify-content:space-between;margin-top:12px"><span>分支覆盖率</span><b>74%</b></div>
+          <div class="bar amber"><div style="width:74%"></div></div>
+        </div>
+      </div>
+
+      <div class="section"><h2>本次生成的测试</h2>
+        <table>
+          <thead><tr><th>测试</th><th>目标方法</th><th>新增覆盖</th><th>断言</th></tr></thead>
+          <tbody>
+            <tr><td>shouldApplyDiscount_whenCouponValid</td><td>CheckoutService.applyDiscount</td><td>+18 行 / +4 分支</td><td>4</td></tr>
+            <tr><td>shouldRejectExpiredCoupon</td><td>CheckoutService.applyDiscount</td><td>+12 行 / +2 分支</td><td>3</td></tr>
+            <tr><td>shouldComputeTaxForCrossRegionOrder</td><td>TaxCalculator.compute</td><td>+15 行 / +3 分支</td><td>5</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section"><h2>风险点</h2>
+        <div class="grid">
+          <div class="card issue"><span class="severity high">高</span> <b>PaymentGateway.refund</b> — 未覆盖退款失败分支，建议补充超时与回调幂等测试。</div>
+          <div class="card issue"><span class="severity medium">中</span> <b>OrderStateMachine</b> — 分支覆盖 62%，存在非法状态迁移风险。</div>
+          <div class="card issue"><span class="severity low">低</span> <b>Util.formatDate</b> — 时区边界未覆盖。</div>
+        </div>
+      </div>
+
+      <div class="section"><h2>PR 评论（示例）</h2>
+        <pre>#482 · Diffblue Cover 建议
+本 PR 自动生成 3 个单元测试，整体行覆盖 87%、分支覆盖 74%。
+需要关注：PaymentGateway.refund 退款失败分支未覆盖，建议补充测试后再合并。</pre>
+      </div>
+      <div class="footer">参考产品形态：Qodo、Diffblue Cover、Codium（IDE / PR 自动补测 + 覆盖率 + 风险评论）。</div>
+    </section>
+
+    <!-- 2. UI/E2E 自动化类 -->
+    <section class="view" id="view-e2e">
+      <div class="head">
+        <div><h1>Testim / Mabl 风格 · UI/E2E 测试报告</h1><p>目标 https://app.example.com/login · Chrome 126 · 桌面端</p></div>
+        <span class="badge warn">⚠ 1 个步骤失败</span>
+      </div>
+
+      <div class="grid stats">
+        <div class="card stat"><div class="num green">23</div><div class="lbl">通过</div></div>
+        <div class="card stat"><div class="num red">1</div><div class="lbl">失败</div></div>
+        <div class="card stat"><div class="num">2</div><div class="lbl">跳过</div></div>
+        <div class="card stat"><div class="num">6m 42s</div><div class="lbl">执行时长</div></div>
+      </div>
+
+      <div class="section"><h2>执行时间线</h2>
+        <div class="grid">
+          <div class="card step pass"><div class="row"><span class="thumb">登录页截图</span><div><b>打开登录页</b><div class="muted">1.2s · 通过</div></div></div></div>
+          <div class="card step pass"><div class="row"><span class="thumb">填写表单截图</span><div><b>填写账号密码</b><div class="muted">2.1s · 通过</div></div></div></div>
+          <div class="card step fail"><div class="row"><span class="thumb">失败截图</span><div><b>点击登录按钮</b><div class="red">超时 15s · 元素不可见</div></div></div></div>
+        </div>
+      </div>
+
+      <div class="section"><h2>失败步骤根因</h2>
+        <div class="card issue">
+          <b>点击登录按钮</b> — <span class="severity high">高</span>
+          <p class="muted">页面出现弹窗遮挡登录按钮，导致点击超时。建议关闭引导弹窗或改用 force 点击。</p>
+        </div>
+      </div>
+
+      <div class="section"><h2>失败截图</h2>
+        <div class="row"><div class="thumb" style="width:220px;height:150px">失败截图占位</div><div class="thumb" style="width:220px;height:150px">DOM 快照占位</div></div>
+      </div>
+
+      <div class="section"><h2>执行录像</h2>
+        <div class="video">▶ 完整执行录像（视频占位）</div>
+      </div>
+
+      <div class="section"><h2>导出 / 分享</h2>
+        <div class="row"><span class="pill">导出 PDF</span><span class="pill">生成网页分享链接</span><span class="pill">复制失败摘要</span></div>
+      </div>
+      <div class="footer">参考产品形态：Testim、Mabl、Applitools（录制/自愈 UI 测试 + 截图/录像 + 根因 + 分享）。</div>
+    </section>
+
+    <!-- 3. 自主测试 Agent 类 -->
+    <section class="view" id="view-agent">
+      <div class="head">
+        <div><h1>TestSprite / Murphy 风格 · 自主测试 Agent 报告</h1><p>入口 github.com/org/payment-service · 模型 deepseek-v4-pro · 耗时 12m 08s</p></div>
+        <span class="badge pass">✓ 结论：质量门禁通过</span>
+      </div>
+
+      <div class="grid stats">
+        <div class="card stat"><div class="num green">41</div><div class="lbl">生成/执行测试</div></div>
+        <div class="card stat"><div class="num red">2</div><div class="lbl">发现问题</div></div>
+        <div class="card stat"><div class="num">83%</div><div class="lbl">覆盖率</div></div>
+        <div class="card stat"><div class="num">4</div><div class="lbl">建议修复</div></div>
+      </div>
+
+      <div class="section"><h2>结论</h2>
+        <div class="card" style="padding:16px">服务可构建、核心链路测试通过；发现 2 个中低风险问题，建议在合并前修复退款幂等，其余可后续处理。</div>
+      </div>
+
+      <div class="section"><h2>发现的问题</h2>
+        <div class="grid">
+          <div class="card issue"><span class="severity medium">中</span> <b>退款接口缺少幂等键</b> — 重复请求会生成重复退款。建议增加 refund_id 唯一约束。</div>
+          <div class="card issue"><span class="severity low">低</span> <b>订单金额校验缺失</b> — 优惠后金额可能为负。建议增加金额下限断言。</div>
+        </div>
+      </div>
+
+      <div class="section"><h2>建议修复（示例 diff）</h2>
+        <pre>@@ RefundService.java
+-  public Refund create(RefundRequest req) {
++  public Refund create(RefundRequest req) {
++    if (req.getRefundId() == null) throw new IllegalArgumentException("refund_id required");
+     return repository.save(Refund.from(req));
+   }</pre>
+      </div>
+
+      <div class="section"><h2>可视化面板</h2>
+        <div class="grid stats">
+          <div class="card stat"><div class="num green">83%</div><div class="lbl">覆盖率</div><div class="bar"><div style="width:83%"></div></div></div>
+          <div class="card stat"><div class="num">41</div><div class="lbl">用例数</div><div class="bar"><div style="width:82%"></div></div></div>
+          <div class="card stat"><div class="num amber">2</div><div class="lbl">风险</div><div class="bar amber"><div style="width:34%"></div></div></div>
+          <div class="card stat"><div class="num">12m</div><div class="lbl">耗时</div><div class="bar"><div style="width:61%"></div></div></div>
+        </div>
+      </div>
+      <div class="footer">参考产品形态：TestSprite、Murphy、coverage-agent（入口 → 计划 → 生成 → 执行 → 修复 → 结论/建议/面板）。</div>
+    </section>
+  </main>
+
+  <script>
+    const tabs = document.querySelectorAll('.tab');
+    const views = { unit: 'view-unit', e2e: 'view-e2e', agent: 'view-agent' };
+    tabs.forEach(tab => tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      document.getElementById(views[tab.dataset.view]).classList.add('active');
+      window.scrollTo(0, 0);
+    }));
+  </script>
+</body>
+</html>

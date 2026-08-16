@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { DesktopApi, LocalHostApi, TaskInput, TaskSnapshot } from '../../../../contracts/src/contracts.js'
+import type { AppMenuCommand, AppNavTarget, DesktopApi, HistoryRecord, LocalHostApi, TaskInput, TaskSnapshot } from '../../../../contracts/src/contracts.js'
 
 const api: DesktopApi = {
   selectProject: () => ipcRenderer.invoke('project:select'),
@@ -17,6 +17,21 @@ const api: DesktopApi = {
   retryTask: (taskId: string) => ipcRenderer.invoke('task:retry', taskId),
   exportReport: (format, snapshot) => ipcRenderer.invoke('report:export', format, snapshot),
   copyReportSummary: (snapshot) => ipcRenderer.invoke('report:copy', snapshot),
+  copyText: (text: string) => ipcRenderer.invoke('clipboard:write', text),
+  getHistory: () => ipcRenderer.invoke('history:get'),
+  saveHistory: (record: HistoryRecord) => ipcRenderer.invoke('history:save', record),
+  clearHistory: () => ipcRenderer.invoke('history:clear'),
+  selectKnowledgeRoots: () => ipcRenderer.invoke('config:selectKnowledgeRoots'),
+  onNavigate: (listener: (target: AppNavTarget) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, target: AppNavTarget) => listener(target)
+    ipcRenderer.on('menu:navigate', handler)
+    return () => ipcRenderer.removeListener('menu:navigate', handler)
+  },
+  onCommand: (listener: (command: AppMenuCommand) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, command: AppMenuCommand) => listener(command)
+    ipcRenderer.on('menu:command', handler)
+    return () => ipcRenderer.removeListener('menu:command', handler)
+  },
   subscribeTask: (listener: (snapshot: TaskSnapshot) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: TaskSnapshot) => listener(snapshot)
     ipcRenderer.on('task:snapshot', handler)
