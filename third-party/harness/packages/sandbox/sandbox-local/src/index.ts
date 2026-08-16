@@ -23,8 +23,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, resolve } from 'node:path'
 import {
   LAUNCHER_BIN,
   LAUNCHER_FAILURE_EXIT,
@@ -557,10 +556,14 @@ export class LocalSandboxProvider extends SandboxProvider {
   private windowsAclRunnerInvocation(): string[] {
     const override = this.internals.windowsAclRunnerArgs
     if (override !== undefined) return override
-    const builtEntry = this.internals.windowsAclRunnerEntry ?? fileURLToPath(import.meta.resolve('@cimdev/harness/dsh-sandbox-windows-acl/runner'))
-    if (existsSync(builtEntry)) return [process.execPath, builtEntry]
-    const sourceEntry = fileURLToPath(import.meta.resolve('@cimdev/harness/dsh-sandbox-windows-acl/src/runner.ts'))
-    return [process.execPath, '--import', 'tsx/esm', sourceEntry]
+    const explicit = this.internals.windowsAclRunnerEntry ?? process.env.TEST_AGENT_DSH_SANDBOX_RUNNER
+    const builtEntry = explicit
+      ? resolve(explicit)
+      : resolve(process.cwd(), 'third-party', 'harness', 'packages', 'sandbox', 'sandbox-windows-acl', 'lib', 'runner.js')
+    if (!existsSync(builtEntry)) {
+      throw new Error(`windows-acl sandbox runner not found: ${builtEntry}`)
+    }
+    return [process.execPath, builtEntry]
   }
 }
 

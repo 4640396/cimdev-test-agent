@@ -12,3 +12,4 @@ services/control-server/data/
 .test-agent-worker/
 .test-agent/
 .test-agent-pw/
+third-party/harness/**/lib/
