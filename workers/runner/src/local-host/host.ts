@@ -15,7 +15,7 @@ import { createWorkerPluginRuntime } from '../plugins/index.js'
 import type { WorkerPluginPolicy } from '../plugins/runtime.js'
 import { RunEventStore } from '../run-events.js'
 import { authorizeProjectPath, parseAllowedProjectRoots } from '../security.js'
-import { runTestKernel } from '../test-kernel.js'
+import { runTestWorkflow } from '../test-workflow.js'
 import { EXECUTION_ID_PATTERN, LOCAL_HOST_PROTOCOL_VERSION, type ClientMessage, type HostMessage } from '../../../../contracts/src/local-host-protocol.js'
 import type { TestType } from '../../../../contracts/src/contracts.js'
 
@@ -150,7 +150,7 @@ export class LocalAgentHost {
     const executors = createTestExecutorRegistry(this.options.testExecutionConfig ?? parseTestExecutionConfig())
     const projectCapabilities = detectProjectCapabilities(message.input.projectPath, message.input.testTypes)
     try {
-      const outcome = await runTestKernel({
+      const outcome = await runTestWorkflow({
         executionId: message.executionId,
         projectPath: message.input.projectPath,
         input: message.input,

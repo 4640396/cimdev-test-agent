@@ -11,7 +11,7 @@ import { resolveBundledPlaywrightCli } from './validator.js'
 import type { TaskInput } from '../../../contracts/src/contracts.js'
 import { RunEventStore, type RunEvent } from './run-events.js'
 import { authorizeProjectPath, parseAllowedProjectRoots } from './security.js'
-import { runTestKernel } from './test-kernel.js'
+import { runTestWorkflow } from './test-workflow.js'
 
 interface ClaimedTask { taskId: string; input: TaskInput }
 
@@ -160,7 +160,7 @@ async function runTask(task: ClaimedTask): Promise<void> {
     void request<{ status: string }>(`/api/worker/tasks/${task.taskId}/status`, undefined, workerHeaders()).then((state) => { if (state.status === 'CANCELLED') controller.abort() }).catch(console.error)
   }, 15_000)
   try {
-    const outcome = await runTestKernel({
+    const outcome = await runTestWorkflow({
       executionId: task.taskId,
       projectPath: task.input.projectPath,
       input: task.input,
