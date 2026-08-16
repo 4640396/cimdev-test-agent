@@ -189,6 +189,18 @@ function parseVitestStats(raw: string): { tests: number; pass: number; fail: num
   return { tests: total || pass + fail, pass, fail }
 }
 
+/** 解析 Vitest 与 Node 原生 test runner 两类输出，避免 node --test 被误判为 0 测试。 */
+function parseNodeTestStats(raw: string): { tests: number; pass: number; fail: number } {
+  const vitest = parseVitestStats(raw)
+  if (vitest.tests > 0 || vitest.fail > 0) return vitest
+  const lines = raw.split(/\r?\n/)
+  return {
+    tests: matchNumber(lines, /\btests\s+(\d+)/),
+    pass: matchNumber(lines, /\bpass\s+(\d+)/),
+    fail: matchNumber(lines, /\bfail\s+(\d+)/)
+  }
+}
+
 /** 独立重跑 node 单元测试（真实执行，不信任 Agent 返回的数字）。 */
 export function runNodeUnitTests(projectPath: string, sandbox?: { confine(argv: readonly string[], policy: unknown): { argv: string[] } }): NodeTestOutcome {
   assertInsideProject(projectPath, projectPath)
@@ -209,33 +221,15 @@ export function runNodeUnitTests(projectPath: string, sandbox?: { confine(argv: 
     env: sandboxEnvironment()
     })
   const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
-  if (script) {
-    const stats = parseVitestStats(raw)
-    return {
-      ok: result.status === 0 && stats.fail === 0,
-      tests: stats.tests,
-      pass: stats.pass,
-      fail: stats.fail,
-      coverage: null,
-      compileError: result.status !== 0 && /Cannot find module|SyntaxError|ERR_MODULE_NOT_FOUND|TypeError/.test(raw),
-      raw,
-      branchCoverage: null,
-      failedCases: [],
-      riskPoints: []
-    }
-  }
-  const lines = raw.split(/\r?\n/)
-  const tests = matchNumber(lines, /\btests\s+(\d+)/)
-  const pass = matchNumber(lines, /\bpass\s+(\d+)/)
-  const fail = matchNumber(lines, /\bfail\s+(\d+)/)
+  const stats = parseNodeTestStats(raw)
   const coverageTable = parseNodeCoverageTable(raw)
   const failedCases = parseNodeFailures(raw)
-  const compileError = result.status !== 0 && /SyntaxError|Cannot find module|ERR_MODULE_NOT_FOUND/.test(raw)
+  const compileError = result.status !== 0 && /Cannot find module|SyntaxError|ERR_MODULE_NOT_FOUND|TypeError/.test(raw)
   return {
-    ok: result.status === 0,
-    tests,
-    pass,
-    fail,
+    ok: result.status === 0 && stats.fail === 0,
+    tests: stats.tests,
+    pass: stats.pass,
+    fail: stats.fail,
     coverage: coverageTable.line,
     compileError,
     raw,
