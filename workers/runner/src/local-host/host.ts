@@ -131,12 +131,21 @@ export class LocalAgentHost {
     dshContext.storage.mount('domain', facility)
     dshContext.provide('storageDomain', facility)
     await dshContext.plugin(WorkspaceRegistry)
+    let sandbox = dshContext.sandbox
     if (process.env.TEST_AGENT_ENABLE_DSH_SANDBOX === 'true') {
       try {
         const { default: LocalSandboxProvider } = await import('@cimdev/harness/dsh-sandbox-local')
         await dshContext.plugin(LocalSandboxProvider)
+        sandbox = dshContext.sandbox
+        if (!sandbox || typeof sandbox.confine !== 'function') {
+          throw new Error('DSH sandbox provider did not expose confine()')
+        }
+        // 失败即关闭的探针：必须在真实测试执行前证明 runner 可被解析，
+        // 否则把损坏的 DSH sandbox 传给执行器会让任务在 confine() 阶段直接失败。
+        sandbox.confine(['cmd'], { mode: 'read-only', workspaceRoot: message.input.projectPath })
       } catch (error) {
         console.warn('DSH sandbox unavailable, falling back to built-in policy', error)
+        sandbox = undefined
       }
     }
     const workspace = await dshContext.workspaceRegistry.create(message.input.projectPath)
@@ -145,7 +154,7 @@ export class LocalAgentHost {
     runEvents.subscribe((event) => {
       void Promise.resolve(send({ id: message.id, kind: 'run-event', executionId: message.executionId, event })).catch(console.error)
     })
-    runEvents.append('run/started', { executionTarget: 'endpoint', workspaceId: active.resolvedPath })
+    runEvents.append('run/started', { executionTarget: 'endpoint', workspaceId: active.resolvedPath, sandbox: sandbox ? 'dsh' : 'policy' })
     const pluginRuntime = createWorkerPluginRuntime(this.options.pluginPolicyOverrides)
     const executors = createTestExecutorRegistry(this.options.testExecutionConfig ?? parseTestExecutionConfig())
     const projectCapabilities = detectProjectCapabilities(message.input.projectPath, message.input.testTypes)
@@ -159,7 +168,7 @@ export class LocalAgentHost {
         pluginRuntime,
         executors,
         runEvents,
-        sandbox: dshContext.sandbox,
+        sandbox,
         signal: controller.signal,
         emit: async (event) => { await send({ id: message.id, kind: 'event', executionId: message.executionId, event }) }
       })
