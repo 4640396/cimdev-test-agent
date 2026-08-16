@@ -64,10 +64,39 @@ const RESULT_SCHEMA = {
         },
         required: ['severity', 'file', 'message', 'suggestion']
       }
+    },
+    fixes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+          file: { type: 'string' },
+          title: { type: 'string' },
+          summary: { type: 'string' },
+          beforeCode: { type: 'string' },
+          afterCode: { type: 'string' }
+        },
+        required: ['severity', 'file', 'title', 'summary', 'beforeCode', 'afterCode'],
+        additionalProperties: false
+      }
     }
   },
-  required: ['lanes', 'report', 'artifacts', 'cases', 'riskPoints']
+  required: ['lanes', 'report', 'artifacts', 'cases', 'riskPoints', 'fixes']
 } as const
+
+const CODEX_NOISE_PATTERNS = [
+  /failed to install system skills/i,
+  /ignoring interface\.icon_/i,
+  /Failed to create shell snapshot for powershell/i,
+  /failed to warm featured plugin ids cache/i,
+  /ignoring interface\.defaultPrompt/i,
+  /Reading additional input from stdin/i
+]
+
+function isCodexNoise(line: string): boolean {
+  return CODEX_NOISE_PATTERNS.some((pattern) => pattern.test(line))
+}
 
 function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: string): string {
   const lines = [
@@ -79,16 +108,19 @@ function buildPrompt(input: TaskInput, outputDirectory: string, knowledge?: stri
     '',
     '执行要求：',
     '1. 识别项目技术栈、模块、现有测试框架和可用构建命令。',
+    '1.1 运行任何命令前必须先读取 package.json/pom.xml 中的实际 scripts；不要假设存在 build/test/dev 命令。前端项目没有 build 脚本时，可运行 npx vite build 或仅启动 dev 服务器。',
     '2. 仅为选中的测试类型生成或补强必要测试；尽量不修改生产代码。',
     '2.1 先生成结构化测试用例清单并放入返回结果的 cases 字段：每例包含 id、title、scenario、steps（数组）、expected、priority(low|medium|high)、layer(api|ui|unit)、source（来源文档或模块）、target（被测方法或函数）、assertions（真实断言数量）、coverageDelta（该用例新增覆盖，如"+18行/+4分支"）。',
     '2.2 将用例清单另存为项目内 .test-agent/cases/cases-<时间戳>.json。',
     '3. 必须调用项目真实工具执行测试，例如 go test、Maven、Gradle、npm、Vitest 或 Playwright。',
-    '3.1 这是硬性要求：若项目没有任何测试文件，必须创建最小可编译的 JUnit（或对应框架）测试，覆盖至少 1-2 个核心服务或工具类，并真实运行它们；不得以“无测试设施”为由跳过生成。',
+    '3.1 这是硬性要求：若项目没有任何测试文件，必须为每个公开 Service/Util/Controller 方法生成有业务意义的单元测试（Java 使用 JUnit），真实断言方法行为、边界和异常；禁止只生成 SmokeTest 或 assertTrue(true) 这类空测试。',
     '3.2 同时生成 riskPoints 数组，描述未被覆盖或风险较高的模块：每项包含 severity(high|medium|low)、file（文件或方法）、message（具体风险）、suggestion（建议修复）。',
+    '3.3 同时生成 fixes 数组，为高风险问题提供建议修复：每项包含 severity、file、title、summary、beforeCode（修复前代码片段）、afterCode（修复后代码片段）；没有修复建议时返回空数组。',
     '4. 单元测试必须编译、执行并包含有业务意义的断言；仅判空断言不能视为有效用例。',
     '5. 回归测试必须基于真实核心场景或已有回归基线；没有可执行条件时标记失败并说明原因。',
     '6. UI 测试必须真实启动或连接应用并执行浏览器操作；成功执行时保存截图，否则标记失败。',
     '6.1 UI 测试优先使用项目已有 Playwright 配置；若需要浏览器，优先使用本机微软 Edge（Playwright channel: "msedge"），不要检查或安装 Playwright 自带浏览器（ms-playwright）。',
+    '6.2 当前执行环境不支持图片输入，不要调用 view_image；截图文件保存后只需在 artifacts 中返回相对路径，不要尝试读取或解析图片内容。',
     '7. passed、failed 和 coverage 只能来自真实测试工具输出；没有覆盖率数据时返回 null。',
     '8. 将测试计划、原始日志和综合报告保存到指定产物目录。',
     '9. artifacts 只返回当前项目内确实存在的相对路径。',
@@ -131,6 +163,9 @@ function validateResult(value: unknown, projectPath: string): AgentRunResult {
   }
   if (result.riskPoints !== undefined && !Array.isArray(result.riskPoints)) {
     throw new Error('Codex CLI riskPoints 必须是数组')
+  }
+  if (result.fixes !== undefined && !Array.isArray(result.fixes)) {
+    throw new Error('Codex CLI fixes 必须是数组')
   }
   return result
 }
@@ -282,7 +317,7 @@ export class CodexCliAdapter implements AgentAdapter {
         stderrBuffer += chunk
         const lines = stderrBuffer.split(/\r?\n/)
         stderrBuffer = lines.pop() ?? ''
-        for (const line of lines) if (line.trim()) emit({ level: 'warning', message: line })
+        for (const line of lines) if (line.trim() && !isCodexNoise(line)) emit({ level: 'warning', message: line })
       })
       child.on('error', finishError)
       child.on('exit', (code) => {
@@ -291,7 +326,7 @@ export class CodexCliAdapter implements AgentAdapter {
         settled = true
         clearTimeout(timer)
         if (stdoutBuffer.trim()) consumeLine(stdoutBuffer)
-        if (stderrBuffer.trim()) emit({ level: 'warning', message: stderrBuffer.trim() })
+        if (stderrBuffer.trim() && !isCodexNoise(stderrBuffer.trim())) emit({ level: 'warning', message: stderrBuffer.trim() })
         writeFileSync(eventsPath, `${eventLines.join('\n')}\n`, 'utf8')
         if (code !== 0) return reject(new Error(`Codex CLI 执行失败，退出码 ${code ?? 'unknown'}`))
         try {

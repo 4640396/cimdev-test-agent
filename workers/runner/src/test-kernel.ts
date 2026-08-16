@@ -6,9 +6,9 @@ import type { WorkerPluginRuntime } from './plugins/runtime.js'
 import type { MavenTestInput, MavenTestOutput } from './plugins/maven-test.js'
 import type { QualityGateInput, QualityGateOutput } from './plugins/quality-gate.js'
 import type { TestPlanInput, TestPlanOutput } from './plugins/test-plan.js'
-import { computeMetrics, countAssertionFiles, runApiCases, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
+import { computeMetrics, countAssertionFiles, loadOpenApiCases, runApiCases, runNodeUnitTests, runPlaywrightUiTests } from './validator.js'
 import type { ApiCaseOutcome, NodeTestOutcome } from './validator.js'
-import type { TaskInput } from '../../../contracts/src/contracts.js'
+import type { TaskInput, TimelineRecord, UiRecording, UiStepRecord } from '../../../contracts/src/contracts.js'
 import type { RunEventStore } from './run-events.js'
 
 export interface TestKernelKnowledgeMeta {
@@ -26,7 +26,11 @@ export interface TestKernelReport {
   screenshots?: string[]
   branchCoverage?: number | null
   failedCases?: Array<{ name: string; layer: string; error: string; suggestion?: string }>
+  uiSteps?: UiStepRecord[]
+  timeline?: TimelineRecord[]
+  recording?: UiRecording
   riskPoints?: Array<{ severity: 'high' | 'medium' | 'low'; file: string; message: string; suggestion?: string }>
+  fixes?: Array<{ severity: 'high' | 'medium' | 'low'; file: string; title: string; summary: string; beforeCode?: string; afterCode?: string }>
   metrics: {
     compileRate: number
     execRate: number
@@ -69,7 +73,30 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
   const { executionId, projectPath, input, capabilities, provider, pluginRuntime, executors, runEvents, signal, emit } = context
   const startedAt = Date.now()
 
+  const timeline: TimelineRecord[] = []
+  const startTimelineStage = (stage: string, message: string): void => {
+    timeline.push({ stage, status: 'running', startedAt: new Date().toISOString(), message })
+  }
+  const finishTimelineStage = (stage: string, status: 'passed' | 'failed' = 'passed', message?: string): void => {
+    for (let index = timeline.length - 1; index >= 0; index -= 1) {
+      const item = timeline[index]
+      if (item.stage === stage && item.status === 'running') {
+        item.status = status
+        item.durationMs = Date.now() - new Date(item.startedAt).getTime()
+        if (message !== undefined) item.message = message
+        return
+      }
+    }
+  }
+
+  const stageLabels: Record<string, string> = {
+    GENERATING: '生成测试',
+    VALIDATING: '独立验证',
+    ANALYZING: '质量门禁与分析'
+  }
   const emitStage = async (stage: string): Promise<void> => {
+    const label = stageLabels[stage] ?? stage
+    startTimelineStage(label, `进入阶段：${stage}`)
     await emit({ level: 'info', message: `进入阶段：${stage}`, stage })
   }
 
@@ -125,19 +152,28 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
   })
 
   let apiResult: ApiCaseOutcome | null = null
-  if (plan.cases.length > 0) {
-    const apiCases = plan.routing
+  {
+    let apiCases = plan.routing
       .filter((item) => item.layer === 'api' && !item.skipped)
       .map((item) => plan.cases.find((caseItem) => caseItem.id === item.caseId))
       .filter((caseItem): caseItem is TestPlanOutput['cases'][number] => Boolean(caseItem))
+    if (input.testTypes.includes('api') && apiCases.length === 0 && input.openApiUrl) {
+      try {
+        apiCases = await loadOpenApiCases(input.openApiUrl) as unknown as TestPlanOutput['cases']
+        await emit({ level: 'info', message: `从 OpenAPI 文档提取 ${apiCases.length} 个接口用例` })
+      } catch (error) {
+        await emit({ level: 'warning', message: `OpenAPI 文档解析失败：${error instanceof Error ? error.message : String(error)}` })
+      }
+    }
     if (apiCases.length > 0) {
       const baseUrl = input.apiBaseUrl
-      apiResult = baseUrl
-        ? await runApiCases(apiCases, baseUrl)
-        : { ok: true, pass: 0, fail: 0, skipped: apiCases.length, details: apiCases.map((caseItem) => ({ caseId: caseItem.id, status: 'skipped', reason: '未配置 apiBaseUrl' })) }
+      const outcome: ApiCaseOutcome = baseUrl
+        ? await runApiCases(apiCases, baseUrl, input.apiHeaders ?? {})
+        : { ok: true, pass: 0, fail: 0, skipped: apiCases.length, details: apiCases.map((caseItem) => ({ caseId: caseItem.id, method: 'GET', path: '', status: 'skipped', reason: '未配置 apiBaseUrl' })) }
+      apiResult = outcome
       await emit({
-        level: apiResult.ok ? 'success' : 'warning',
-        message: `API 用例执行：${apiResult.pass} 通过 / ${apiResult.fail} 失败 / ${apiResult.skipped} 跳过`
+        level: outcome.ok ? 'success' : 'warning',
+        message: `API 用例执行：${outcome.pass} 通过 / ${outcome.fail} 失败 / ${outcome.skipped} 跳过`
       })
     }
   }
@@ -157,13 +193,14 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
         : null
     : null
   const uiOutcome = input.testTypes.includes('ui') && executionCapabilities.includes('playwright')
-    ? runPlaywrightUiTests(projectPath)
+    ? runPlaywrightUiTests(projectPath, { entryUrl: input.uiEntryUrl, env: input.environment })
     : null
   const regressionTool = executionCapabilities.includes('java') ? 'java' : executionCapabilities.includes('node') ? 'node' : null
   const regressionOutcome = input.testTypes.includes('regression') && regressionTool
     ? (regressionTool === 'java' ? mavenOutcome : (unitOutcome ?? runNodeUnitTests(projectPath)))
     : null
 
+  finishTimelineStage('生成测试', 'passed', `测试计划 ${plan.meta.count} 条`)
   await emitStage('VALIDATING')
   const uniqueOutcomes = [...new Set([unitOutcome, uiOutcome, regressionOutcome].filter((outcome): outcome is Outcome => outcome !== null))]
   const baseOutcome = uniqueOutcomes[0] ?? {
@@ -264,6 +301,30 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
           ...(typeof item.suggestion === 'string' ? { suggestion: item.suggestion } : {})
         }))
     : []
+  const aiFixes = Array.isArray(adapterResult.fixes)
+    ? adapterResult.fixes
+        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+        .map((item) => ({
+          severity: (item.severity === 'high' || item.severity === 'medium' || item.severity === 'low' ? item.severity : 'medium') as 'high' | 'medium' | 'low',
+          file: String(item.file ?? ''),
+          title: String(item.title ?? ''),
+          summary: String(item.summary ?? ''),
+          ...(typeof item.beforeCode === 'string' ? { beforeCode: item.beforeCode } : {}),
+          ...(typeof item.afterCode === 'string' ? { afterCode: item.afterCode } : {})
+        }))
+    : []
+  const unitFailedCases = unitOutcome && 'failedCases' in unitOutcome
+    ? (unitOutcome.failedCases ?? []).map((item) => ({ name: item.name, layer: item.layer, error: item.error }))
+    : []
+  const uiFailedCases = (uiOutcome && 'uiSteps' in uiOutcome ? (uiOutcome.uiSteps ?? []) : [])
+    .filter((step) => step.status === 'failed')
+    .map((step) => ({
+      name: step.name,
+      layer: 'ui',
+      error: step.error ?? 'UI 步骤失败',
+      suggestion: step.screenshot ? '失败截图已捕获' : undefined,
+      screenshot: step.screenshot
+    }))
   const report: TestKernelReport = {
     ...adapterResult.report,
     passed: totalPass,
@@ -271,12 +332,16 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     coverage,
     durationMs: Date.now() - startedAt,
     summary: gate.passed
-      ? `璐ㄩ噺闂ㄧ閫氳繃锛?{totalPass} 閫氳繃 / ${totalFail} 澶辫触锛岃鐩栫巼 ${coverage === null ? 'N/A' : `${coverage}%`}`
-      : `璐ㄩ噺闂ㄧ鏈€氳繃锛?{gate.reason}`,
+      ? `质量门禁通过：${totalPass} 通过 / ${totalFail} 失败，覆盖率 ${coverage === null ? 'N/A' : `${coverage}%`}`
+      : `质量门禁未通过：${gate.reason}`,
     screenshots: uiOutcome?.screenshots ?? [],
     branchCoverage: unitOutcome && 'branchCoverage' in unitOutcome ? unitOutcome.branchCoverage : null,
-    failedCases: unitOutcome && 'failedCases' in unitOutcome ? unitOutcome.failedCases?.map((item) => ({ name: item.name, layer: item.layer, error: item.error })) : [],
+    failedCases: [...unitFailedCases, ...uiFailedCases],
+    uiSteps: uiOutcome && 'uiSteps' in uiOutcome ? (uiOutcome.uiSteps ?? []) : [],
+    timeline,
+    recording: uiOutcome && 'recording' in uiOutcome ? uiOutcome.recording : undefined,
     riskPoints: aiRiskPoints.length > 0 ? aiRiskPoints : (unitOutcome && 'riskPoints' in unitOutcome ? unitOutcome.riskPoints : []),
+    fixes: aiFixes,
     metrics: { ...metrics, knowledgeRate },
     gate,
     knowledge: knowledgeMeta,
@@ -285,11 +350,13 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     routing: plan.routing,
     api: apiResult
   }
+  finishTimelineStage('独立验证', 'passed', `通过 ${totalPass} / 失败 ${totalFail}`)
   await emitStage('ANALYZING')
   await emit({
     level: gate.passed ? 'success' : 'warning',
     message: `质量门禁：${gate.reason}；四率=编译${Math.round(metrics.compileRate * 100)}% 执行${Math.round(metrics.execRate * 100)}% 断言${Math.round(metrics.assertRate * 100)}% 有效${Math.round(metrics.effectiveRate * 100)}%`
   })
+  finishTimelineStage('质量门禁与分析', 'passed', gate.reason)
   runEvents.append('run/result-ready', { gatePassed: gate.passed, passed: totalPass, failed: totalFail })
 
   return { adapterResult, report, lanes, gate }

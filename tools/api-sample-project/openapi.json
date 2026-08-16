@@ -1,0 +1,25 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "API Sample",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Health check",
+        "operationId": "health"
+      }
+    },
+    "/api/users": {
+      "get": {
+        "summary": "List users",
+        "operationId": "listUsers"
+      },
+      "post": {
+        "summary": "Create user",
+        "operationId": "createUser"
+      }
+    }
+  }
+}

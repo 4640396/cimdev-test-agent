@@ -18,6 +18,7 @@ export interface AgentRunResult {
   artifacts: string[]
   cases?: unknown[]
   riskPoints?: unknown[]
+  fixes?: unknown[]
 }
 
 export interface AgentAdapter {

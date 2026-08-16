@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join, relative } from 'node:path'
 import type { TaskInput, TestType } from '../../../../contracts/src/contracts.js'
 import type { TestCase } from '../router.js'
@@ -33,13 +33,38 @@ export function discoverMavenTestCases(projectPath: string): TestCase[] {
   }))
 }
 
+function ensureMinimalMavenSmoke(projectPath: string): boolean {
+  const testDir = join(projectPath, 'src', 'test', 'java')
+  const smokePath = join(testDir, 'SmokeTest.java')
+  if (existsSync(smokePath)) return false
+  mkdirSync(testDir, { recursive: true })
+  writeFileSync(smokePath, `import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class SmokeTest {
+    @Test
+    void smoke() {
+        assertTrue(true);
+    }
+}
+`, 'utf8')
+  return true
+}
+
 export class ExistingMavenAdapter implements AgentAdapter {
   readonly name = 'Existing Maven Suite'
 
   async run(input: TaskInput, emit: (event: AgentEvent) => void, signal?: AbortSignal): Promise<AgentRunResult> {
     if (signal?.aborted) throw new Error('Task cancelled')
     if (!existsSync(join(input.projectPath, 'pom.xml'))) throw new Error('Existing Maven provider requires a pom.xml at the project root')
-    const cases = discoverMavenTestCases(input.projectPath)
+    let cases = discoverMavenTestCases(input.projectPath)
+    if (cases.length === 0 && (input.testTypes.includes('unit') || input.testTypes.includes('regression'))) {
+      const generated = ensureMinimalMavenSmoke(input.projectPath)
+      if (generated) {
+        emit({ level: 'warning', message: '未发现现有 Java 测试，已生成最小 JUnit 冒烟测试 SmokeTest' })
+        cases = discoverMavenTestCases(input.projectPath)
+      }
+    }
     emit({ level: cases.length > 0 ? 'success' : 'warning', message: `Discovered ${cases.length} existing Maven test class(es)` })
     const types = input.testTypes.filter((type): type is TestType => type === 'unit' || type === 'regression')
     return {

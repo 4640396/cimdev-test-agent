@@ -40,8 +40,9 @@ export const qualityGatePlugin: WorkerPlugin<'quality_gate', QualityGateInput, Q
   name: 'quality_gate',
   execute(_context, input) {
     const reasons: string[] = []
-    if (input.plan.meta.count === 0) reasons.push('未生成结构化测试计划')
-    if (input.plan.issues.length > 0) reasons.push(...input.plan.issues)
+    const advisories: string[] = []
+    if (input.plan.meta.count === 0) advisories.push('未生成结构化测试计划')
+    if (input.plan.issues.length > 0) advisories.push(...input.plan.issues)
 
     for (const check of input.checks) {
       if (!check.required) continue
@@ -62,13 +63,15 @@ export const qualityGatePlugin: WorkerPlugin<'quality_gate', QualityGateInput, Q
       reasons.push(`覆盖率 ${input.coverage}% 未达到目标 ${input.coverageTarget}%`)
     }
     const uniqueReasons = [...new Set(reasons)]
+    const uniqueAdvisories = [...new Set(advisories)]
     const coverageNote = input.coverage === null ? '未取得覆盖率数据，覆盖率检查已披露但不单独阻断' : '覆盖率达标'
+    const passed = uniqueReasons.length === 0
     return {
-      passed: uniqueReasons.length === 0,
+      passed,
       coverageTarget: input.coverageTarget,
       coverage: input.coverage,
       effectiveRate: input.metrics.effectiveRate,
-      reason: uniqueReasons.length === 0 ? coverageNote : uniqueReasons.join('；'),
+      reason: passed ? [coverageNote, ...uniqueAdvisories].join('；') : uniqueReasons.join('；'),
       reasons: uniqueReasons,
       checks: input.checks
     }

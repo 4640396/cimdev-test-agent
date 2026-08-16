@@ -117,7 +117,11 @@ function detectTestTypes(projectPath: string): TestType[] {
     .some((name) => existsSync(join(projectPath, name)))
   if (hasPlaywright) return ['ui']
   if (existsSync(join(projectPath, 'pom.xml'))) return ['unit', 'regression']
-  if (existsSync(join(projectPath, 'package.json'))) return ['unit']
+  if (existsSync(join(projectPath, 'package.json'))) {
+    const isFrontend = ['index.html', 'vite.config.ts', 'vite.config.js', 'vue.config.js', 'webpack.config.js']
+      .some((name) => existsSync(join(projectPath, name)))
+    return isFrontend ? ['ui'] : ['unit']
+  }
   return ['unit']
 }
 
@@ -156,6 +160,23 @@ function reportMarkdown(snapshot: TaskSnapshot): string {
       md += `\n## 失败用例\n\n| 用例 | 层级 | 错误 | 建议 |\n|---|---|---|---|\n`
       for (const item of report.failedCases) md += `| ${item.name} | ${item.layer} | ${item.error} | ${item.suggestion ?? '-'} |\n`
     }
+    if (report.fixes?.length) {
+      md += `\n## 建议修复\n\n`
+      for (const item of report.fixes) {
+        md += `### ${item.title}\n\n- 文件：${item.file}\n- 级别：${item.severity}\n- 说明：${item.summary}\n\n**修复前**\n\n\`\`\`\n${item.beforeCode ?? '-'}\n\`\`\`\n\n**修复后**\n\n\`\`\`\n${item.afterCode ?? '-'}\n\`\`\`\n\n`
+      }
+    }
+    if (report.timeline?.length) {
+      md += `\n## 执行时间线\n\n| 阶段 | 状态 | 耗时 | 说明 |\n|---|---|---|---|\n`
+      for (const item of report.timeline) md += `| ${item.stage} | ${item.status} | ${item.durationMs !== undefined ? `${Math.round(item.durationMs / 1000)}s` : '-'} | ${item.message ?? '-'} |\n`
+    }
+    if (report.uiSteps?.length) {
+      md += `\n## UI 执行步骤\n\n| 步骤 | 状态 | 耗时 | 错误 |\n|---|---|---|---|\n`
+      for (const item of report.uiSteps) md += `| ${item.name} | ${item.status} | ${item.durationMs !== undefined ? `${Math.round(item.durationMs / 1000)}s` : '-'} | ${item.error ?? '-'} |\n`
+    }
+    if (report.recording?.video || report.recording?.trace) {
+      md += `\n## 执行录像 / Trace\n\n- 录像：${report.recording.video ?? '-'}\n- Trace：${report.recording.trace ?? '-'}\n`
+    }
   }
   return md
 }
@@ -169,7 +190,38 @@ function reportHtml(snapshot: TaskSnapshot): string {
   const coverageText = report?.coverage === null || report?.coverage === undefined ? 'N/A' : `${report.coverage}%`
   const caseRows = (report?.cases ?? []).map((item) => `<tr><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.layer ?? '-')}</td><td>${escapeHtml(item.priority)}</td><td>${escapeHtml(item.scenario)}</td><td>${escapeHtml(item.expected)}</td></tr>`).join('')
   const failedRows = (report?.failedCases ?? []).map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.layer)}</td><td>${escapeHtml(item.error)}</td><td>${escapeHtml(item.suggestion ?? '-')}</td></tr>`).join('')
-  return `<!doctype html><meta charset="utf-8"><title>CIMDEV 测试报告</title><body style="font-family:system-ui"><h1>CIMDEV 测试报告</h1><p>通过 ${report?.passed ?? '--'} · 失败 ${report?.failed ?? '--'} · 覆盖率 ${coverageText}</p>${report?.summary ? `<p>${escapeHtml(report.summary)}</p>` : ''}<h2>测试计划</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>优先级</th><th>场景</th><th>预期</th></tr>${caseRows}</table><h2>失败用例</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>错误</th><th>建议</th></tr>${failedRows}</table></body>`
+  const timelineRows = (report?.timeline ?? []).map((item) => `<tr><td>${escapeHtml(item.stage)}</td><td>${escapeHtml(item.status)}</td><td>${item.durationMs !== undefined ? `${Math.round(item.durationMs / 1000)}s` : '-'}</td><td>${escapeHtml(item.message ?? '-')}</td></tr>`).join('')
+  const uiStepRows = (report?.uiSteps ?? []).map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.status)}</td><td>${item.durationMs !== undefined ? `${Math.round(item.durationMs / 1000)}s` : '-'}</td><td>${escapeHtml(item.error ?? '-')}</td></tr>`).join('')
+  const recordingHtml = report?.recording?.video || report?.recording?.trace
+    ? `<h2>执行录像 / Trace</h2><ul><li>录像：${escapeHtml(report.recording.video ?? '-')}</li><li>Trace：${escapeHtml(report.recording.trace ?? '-')}</li></ul>`
+    : ''
+  const fixCards = (report?.fixes ?? []).map((item) => `<div style="margin:8px 0;padding:10px;border:1px solid #ddd;border-radius:8px"><b>${escapeHtml(item.title)}</b><div>${escapeHtml(item.file)} · ${escapeHtml(item.severity)}</div><p>${escapeHtml(item.summary)}</p><div>修复前<pre>${escapeHtml(item.beforeCode ?? '-')}</pre></div><div>修复后<pre>${escapeHtml(item.afterCode ?? '-')}</pre></div></div>`).join('')
+  return `<!doctype html><meta charset="utf-8"><title>CIMDEV 测试报告</title><body style="font-family:system-ui"><h1>CIMDEV 测试报告</h1><p>通过 ${report?.passed ?? '--'} · 失败 ${report?.failed ?? '--'} · 覆盖率 ${coverageText}</p>${report?.summary ? `<p>${escapeHtml(report.summary)}</p>` : ''}<h2>测试计划</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>优先级</th><th>场景</th><th>预期</th></tr>${caseRows}</table><h2>失败用例</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>用例</th><th>层级</th><th>错误</th><th>建议</th></tr>${failedRows}</table>${report?.timeline?.length ? `<h2>执行时间线</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>阶段</th><th>状态</th><th>耗时</th><th>说明</th></tr>${timelineRows}</table>` : ''}${report?.uiSteps?.length ? `<h2>UI 执行步骤</h2><table border="1" cellspacing="0" cellpadding="6"><tr><th>步骤</th><th>状态</th><th>耗时</th><th>错误</th></tr>${uiStepRows}</table>` : ''}${recordingHtml}${report?.fixes?.length ? `<h2>建议修复</h2>${fixCards}` : ''}</body>`
+}
+
+function printReportPdf(html: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const printWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+    })
+    printWindow.webContents.once('did-finish-load', () => {
+      void printWindow.webContents.printToPDF({ printBackground: true, pageSize: 'A4' })
+        .then((pdf) => {
+          printWindow.destroy()
+          resolve(pdf)
+        })
+        .catch((error) => {
+          printWindow.destroy()
+          reject(error)
+        })
+    })
+    printWindow.webContents.once('did-fail-load', (_event, code, description) => {
+      printWindow.destroy()
+      reject(new Error(`PDF render failed (${code}): ${description}`))
+    })
+    void printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+  })
 }
 
 function createWindow(): void {
@@ -260,22 +312,6 @@ function buildMenu(): void {
       ]
     },
     {
-      label: '配置',
-      submenu: [
-        { label: '覆盖率目标…', click: () => sendMenuNavigation('settings') },
-        {
-          label: '知识库目录…',
-          click: async () => {
-            if (!mainWindow) return
-            const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'multiSelections'], title: '选择知识库目录' })
-            if (result.canceled) return
-            knowledgeRoots = result.filePaths
-            mainWindow.webContents.send('config:changed', knowledgeRoots)
-          }
-        }
-      ]
-    },
-    {
       label: '帮助',
       submenu: [
         { role: 'about', label: '关于 CIMDEV 测试 Agent' }
@@ -332,10 +368,9 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.handle('report:export', async (_event, format: 'markdown' | 'html' | 'json', snapshot: TaskSnapshot) => {
+  ipcMain.handle('report:export', async (_event, format: 'markdown' | 'html' | 'json' | 'pdf', snapshot: TaskSnapshot) => {
     if (!mainWindow) return { saved: false, error: 'window unavailable' }
-    const extension = format === 'json' ? 'json' : format === 'html' ? 'html' : 'md'
-    const content = format === 'json' ? JSON.stringify(snapshot, null, 2) : format === 'html' ? reportHtml(snapshot) : reportMarkdown(snapshot)
+    const extension = format === 'json' ? 'json' : format === 'html' ? 'html' : format === 'pdf' ? 'pdf' : 'md'
     const result = await dialog.showSaveDialog(mainWindow, {
       title: '导出测试报告',
       defaultPath: `test-report.${extension}`,
@@ -343,7 +378,13 @@ app.whenReady().then(() => {
     })
     if (result.canceled || !result.filePath) return { saved: false }
     try {
-      writeFileSync(result.filePath, content, 'utf8')
+      if (format === 'pdf') {
+        const pdf = await printReportPdf(reportHtml(snapshot))
+        writeFileSync(result.filePath, pdf)
+      } else {
+        const content = format === 'json' ? JSON.stringify(snapshot, null, 2) : format === 'html' ? reportHtml(snapshot) : reportMarkdown(snapshot)
+        writeFileSync(result.filePath, content, 'utf8')
+      }
       return { saved: true, path: result.filePath }
     } catch (error) {
       return { saved: false, error: error instanceof Error ? error.message : String(error) }

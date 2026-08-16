@@ -1,8 +1,8 @@
-export type TestType = 'unit' | 'regression' | 'ui'
+export type TestType = 'unit' | 'regression' | 'ui' | 'api'
 export type TaskStatus = 'idle' | 'queued' | 'planning' | 'running' | 'completed' | 'failed' | 'cancelled' | 'needsReview'
 export type LaneStatus = 'pending' | 'running' | 'passed' | 'failed'
 export type AppNavTarget = 'home' | 'history' | 'settings'
-export type AppMenuCommand = 'start' | 'cancel' | 'exportMarkdown' | 'exportHtml' | 'copySummary' | 'selectKnowledgeRoots'
+export type AppMenuCommand = 'start' | 'cancel' | 'exportMarkdown' | 'exportHtml' | 'copySummary' | 'selectKnowledgeRoots' | 'settingsEnvironment' | 'settingsApi' | 'settingsUi' | 'settingsCoverage' | 'settingsKnowledge'
 
 export interface TaskInput {
   projectPath: string
@@ -14,6 +14,10 @@ export interface TaskInput {
   knowledgeRoots?: string[]
   targetClasses?: string[]
   apiBaseUrl?: string
+  openApiUrl?: string
+  apiHeaders?: Record<string, string>
+  uiEntryUrl?: string
+  environment?: Record<string, string>
   /**
    * Execution target invariant: endpoint tasks are device-bound and must never
    * be re-dispatched to another terminal; shared tasks are re-acquirable and
@@ -87,6 +91,27 @@ export interface FailedCaseRecord {
   screenshot?: string
 }
 
+export interface UiStepRecord {
+  name: string
+  status: 'passed' | 'failed' | 'skipped'
+  durationMs?: number
+  screenshot?: string
+  error?: string
+}
+
+export interface TimelineRecord {
+  stage: string
+  status: 'pending' | 'running' | 'passed' | 'failed'
+  startedAt: string
+  durationMs?: number
+  message?: string
+}
+
+export interface UiRecording {
+  video?: string
+  trace?: string
+}
+
 export interface TaskSnapshot {
   taskId: string
   status: TaskStatus
@@ -108,7 +133,11 @@ export interface TaskSnapshot {
     }
     routing?: RoutingRecord[]
     failedCases?: FailedCaseRecord[]
+    uiSteps?: UiStepRecord[]
+    timeline?: TimelineRecord[]
+    recording?: UiRecording
     riskPoints?: Array<{ severity: 'high' | 'medium' | 'low'; file: string; message: string; suggestion?: string }>
+    fixes?: Array<{ severity: 'high' | 'medium' | 'low'; file: string; title: string; summary: string; beforeCode?: string; afterCode?: string }>
     screenshots?: string[]
     metrics?: {
       compileRate: number
@@ -123,6 +152,12 @@ export interface TaskSnapshot {
       effectiveRate: number
       passed: boolean
       reason: string
+    }
+    api?: {
+      pass: number
+      fail: number
+      skipped: number
+      details: Array<{ caseId: string; method: string; path: string; status: string; statusCode?: number; durationMs?: number; reason?: string }>
     }
     knowledge?: {
       refs: Array<{
@@ -186,7 +221,7 @@ export interface DesktopApi {
   cancelTask(taskId: string): Promise<TaskSnapshot | null>
   retryTask(taskId: string): Promise<{ taskId: string } | null>
   subscribeTask(listener: (snapshot: TaskSnapshot) => void): () => void
-  exportReport(format: 'markdown' | 'html' | 'json', snapshot: TaskSnapshot): Promise<ExportResult>
+  exportReport(format: 'markdown' | 'html' | 'json' | 'pdf', snapshot: TaskSnapshot): Promise<ExportResult>
   copyReportSummary(snapshot: TaskSnapshot): Promise<CopyResult>
   copyText(text: string): Promise<CopyResult>
   getHistory(): Promise<HistoryRecord[]>

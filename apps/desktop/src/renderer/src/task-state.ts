@@ -3,7 +3,8 @@ import type { LaneState, TaskSnapshot, TestType } from '../../../../../contracts
 export const laneLabels: Record<TestType, string> = {
   unit: '单元测试',
   regression: '回归测试',
-  ui: 'UI 测试'
+  ui: 'UI 测试',
+  api: '接口测试'
 }
 
 export function emptyLanes(types: TestType[]): LaneState[] {

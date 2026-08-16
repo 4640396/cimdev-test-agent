@@ -52,7 +52,7 @@
   .step { padding: 12px 14px; }
   .step.pass { border-left: 3px solid var(--green); }
   .step.fail { border-left: 3px solid var(--red); }
-  .thumb { width: 130px; height: 86px; border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(135deg,#f8fafc,#eef2f7); display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+  .thumb { width: 130px; height: 86px; border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(135deg,#f8fafc,#eef2f7); display: grid; place-items: center; color: var(--muted); font-size: 12px; object-fit: cover; }
   .video { height: 230px; border: 1px dashed #cbd5e1; border-radius: 12px; display: grid; place-items: center; color: var(--muted); background: #f8fafc; }
   .issue { padding: 14px; }
   .severity { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
@@ -141,9 +141,10 @@
 
       <div class="section"><h2>执行时间线</h2>
         <div class="grid">
-          <div class="card step pass"><div class="row"><span class="thumb">登录页截图</span><div><b>打开登录页</b><div class="muted">1.2s · 通过</div></div></div></div>
-          <div class="card step pass"><div class="row"><span class="thumb">填写表单截图</span><div><b>填写账号密码</b><div class="muted">2.1s · 通过</div></div></div></div>
-          <div class="card step fail"><div class="row"><span class="thumb">失败截图</span><div><b>点击登录按钮</b><div class="red">超时 15s · 元素不可见</div></div></div></div>
+          <div class="card step pass"><div class="row"><img class="thumb" src="../ui-sample-project/.test-agent/screenshots/run-1786877276103-uqtloz/01-home.png" alt="打开首页" /><div><b>打开首页</b><div class="muted">0.5s · 通过</div></div></div></div>
+          <div class="card step pass"><div class="row"><img class="thumb" src="../ui-sample-project/.test-agent/screenshots/run-1786877276103-uqtloz/02-form.png" alt="填写表单" /><div><b>填写表单</b><div class="muted">0.1s · 通过</div></div></div></div>
+          <div class="card step pass"><div class="row"><img class="thumb" src="../ui-sample-project/.test-agent/screenshots/run-1786877276103-uqtloz/03-after-click.png" alt="点击提交/主要按钮" /><div><b>点击提交/主要按钮</b><div class="muted">1.1s · 通过</div></div></div></div>
+          <div class="card step pass"><div class="row"><img class="thumb" src="../ui-sample-project/.test-agent/screenshots/run-1786877276103-uqtloz/04-result.png" alt="检查页面反馈" /><div><b>检查页面反馈</b><div class="muted">0.1s · 通过</div></div></div></div>
         </div>
       </div>
 

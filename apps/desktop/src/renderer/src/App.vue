@@ -6,7 +6,17 @@ import { emptyLanes, laneLabels, progressOf } from './task-state'
 
 type View = 'home' | 'plan' | 'run' | 'report' | 'history' | 'settings'
 
-const form = reactive<TaskInput>({ projectPath: '', systemName: '', version: '', testTypes: ['unit'], coverageTarget: 80 })
+interface EnvironmentProfile {
+  id: string
+  name: string
+  apiBaseUrl: string
+  openApiUrl: string
+  uiEntryUrl: string
+  apiHeaders: Array<{ key: string; value: string }>
+  env: Array<{ key: string; value: string }>
+}
+
+const form = reactive<TaskInput>({ projectPath: '', systemName: '', version: '', testTypes: ['unit'], coverageTarget: 80, uiEntryUrl: '', apiBaseUrl: '', openApiUrl: '' })
 const snapshot = ref<TaskSnapshot | null>(null)
 const error = ref('')
 const starting = ref(false)
@@ -16,6 +26,11 @@ const localStatus = ref<LocalHostStatus>({ running: false })
 const localLogs = ref<TaskSnapshot['logs']>([])
 const localTaskId = ref('')
 const history = ref<HistoryRecord[]>([])
+const envEntries = ref<Array<{ key: string; value: string }>>([])
+const apiHeaderEntries = ref<Array<{ key: string; value: string }>>([])
+const environments = ref<EnvironmentProfile[]>([])
+const activeEnvironmentId = ref('')
+const settingsSection = ref<'environment' | 'api' | 'ui' | 'coverage' | 'knowledge'>('environment')
 const view = ref<View>('home')
 
 let detectTimer: ReturnType<typeof setTimeout> | undefined
@@ -44,6 +59,15 @@ const overviewQuality = computed(() => {
   const effective = Math.round((item.metrics?.effectiveRate ?? 0) * 100)
   return Math.round((coverage + effective) / 2)
 })
+const coverageTrend = computed(() => [...history.value]
+  .reverse()
+  .filter((item) => item.snapshot.report?.coverage !== null && item.snapshot.report?.coverage !== undefined)
+  .slice(-10)
+  .map((item) => ({
+    label: new Date(item.savedAt).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+    coverage: item.snapshot.report?.coverage as number
+  }))
+)
 const artifactItems = computed(() => (snapshot.value?.artifacts ?? []).map((artifact) => {
   const normalized = artifact.replace(/\\/g, '/')
   const parts = normalized.split('/')
@@ -99,6 +123,11 @@ async function detectProject(path: string): Promise<void> {
   }
 }
 
+function toggleTestType(type: TestType): void {
+  if (form.testTypes.includes(type)) form.testTypes = form.testTypes.filter((item) => item !== type)
+  else form.testTypes = [...form.testTypes, type]
+}
+
 watch(() => form.projectPath, (path) => {
   if (detectTimer) clearTimeout(detectTimer)
   detectTimer = setTimeout(() => { void detectProject(path) }, 350)
@@ -106,6 +135,11 @@ watch(() => form.projectPath, (path) => {
 
 function go(next: View): void {
   view.value = next
+}
+
+function openSettingsSection(section: 'environment' | 'api' | 'ui' | 'coverage' | 'knowledge'): void {
+  settingsSection.value = section
+  go('settings')
 }
 
 function pushLocalLog(level: 'info' | 'success' | 'warning' | 'error', message: string): void {
@@ -125,10 +159,15 @@ interface LocalRunOutcome {
     cases?: { count: number; byLayer: Record<string, number>; byPriority: Record<string, number> }
     routing?: RoutingRecord[]
     failedCases?: FailedCaseRecord[]
+    uiSteps?: NonNullable<TaskSnapshot['report']>['uiSteps']
+    timeline?: NonNullable<TaskSnapshot['report']>['timeline']
+    recording?: NonNullable<TaskSnapshot['report']>['recording']
     riskPoints?: Array<{ severity: 'high' | 'medium' | 'low'; file: string; message: string; suggestion?: string }>
+    fixes?: NonNullable<TaskSnapshot['report']>['fixes']
     screenshots?: string[]
     metrics?: NonNullable<TaskSnapshot['report']>['metrics']
     gate?: { passed?: boolean; coverageTarget?: number; coverage?: number | null; effectiveRate?: number; reason?: string }
+    api?: NonNullable<TaskSnapshot['report']>['api']
     knowledge?: NonNullable<TaskSnapshot['report']>['knowledge']
   }
   lanes?: Array<{ type: TestType; status: 'passed' | 'failed'; summary: string }>
@@ -173,10 +212,15 @@ function applyRunResult(message: RunResultMessage): void {
         casesMeta: runReport.cases,
         routing: runReport.routing,
         failedCases: runReport.failedCases ?? [],
+        uiSteps: runReport.uiSteps ?? [],
+        timeline: runReport.timeline ?? [],
+        recording: runReport.recording,
         riskPoints: runReport.riskPoints ?? [],
+        fixes: runReport.fixes ?? [],
         screenshots: runReport.screenshots ?? [],
         metrics,
         gate: gate ? { coverageTarget: gate.coverageTarget ?? 0, coverage: gate.coverage ?? null, effectiveRate: gate.effectiveRate ?? 0, passed: gate.passed ?? false, reason: gate.reason ?? '' } : undefined,
+        api: runReport.api,
         knowledge: runReport.knowledge
       }
     : undefined
@@ -205,6 +249,7 @@ function handleLocalMessage(raw: unknown): void {
       localTaskId.value = message.executionId
       snapshot.value = { taskId: message.executionId, status: 'running', logs: [], lanes: emptyLanes(form.testTypes), artifacts: [] }
       pushLocalLog('info', `任务已接受：${message.executionId}`)
+      go('run')
       break
     case 'event':
       pushLocalLog(message.event.level, message.event.message)
@@ -214,6 +259,7 @@ function handleLocalMessage(raw: unknown): void {
     case 'run-result':
       pushLocalLog('success', `任务完成：${message.executionId}`)
       applyRunResult(message)
+      go('report')
       void persistCurrentRun()
       break
     case 'run-error':
@@ -249,7 +295,14 @@ async function startTask(): Promise<void> {
   starting.value = true
   localLogs.value = []
   try {
-    const result = await window.testAgentLocal.start({ ...form, testTypes: [...form.testTypes], knowledgeRoots: knowledgeRoots.value.length > 0 ? [...knowledgeRoots.value] : undefined })
+    const result = await window.testAgentLocal.start({
+      ...form,
+      testTypes: [...form.testTypes],
+      knowledgeRoots: knowledgeRoots.value.length > 0 ? [...knowledgeRoots.value] : undefined,
+      environment: environmentFromEntries(),
+      apiHeaders: apiHeadersFromEntries(),
+      uiEntryUrl: form.uiEntryUrl?.trim() ? form.uiEntryUrl : undefined
+    })
     localTaskId.value = result.taskId
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '任务启动失败'
@@ -263,7 +316,7 @@ async function cancelTask(): Promise<void> {
   await window.testAgentLocal.cancel(localTaskId.value)
 }
 
-async function exportReport(format: 'markdown' | 'html' | 'json'): Promise<void> {
+async function exportReport(format: 'markdown' | 'html' | 'json' | 'pdf'): Promise<void> {
   if (!snapshot.value?.report) return
   const result = await window.testAgent.exportReport(format, snapshot.value)
   if (!result.saved) error.value = result.error ?? '导出失败'
@@ -293,6 +346,83 @@ async function selectKnowledgeRoots(): Promise<void> {
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '选择知识库目录失败'
   }
+}
+
+function addEnvEntry(): void {
+  envEntries.value.push({ key: '', value: '' })
+}
+
+function removeEnvEntry(index: number): void {
+  envEntries.value.splice(index, 1)
+}
+
+function environmentFromEntries(): Record<string, string> | undefined {
+  const entries = envEntries.value.filter((entry) => entry.key.trim() !== '')
+  if (entries.length === 0) return undefined
+  return Object.fromEntries(entries.map((entry) => [entry.key.trim(), entry.value]))
+}
+
+function addApiHeaderEntry(): void {
+  apiHeaderEntries.value.push({ key: '', value: '' })
+}
+
+function removeApiHeaderEntry(index: number): void {
+  apiHeaderEntries.value.splice(index, 1)
+}
+
+function apiHeadersFromEntries(): Record<string, string> | undefined {
+  const entries = apiHeaderEntries.value.filter((entry) => entry.key.trim() !== '')
+  if (entries.length === 0) return undefined
+  return Object.fromEntries(entries.map((entry) => [entry.key.trim(), entry.value]))
+}
+
+function loadEnvironments(): void {
+  try {
+    const raw = localStorage.getItem('test-agent-environments')
+    environments.value = raw ? JSON.parse(raw) as EnvironmentProfile[] : []
+  } catch {
+    environments.value = []
+  }
+}
+
+function persistEnvironments(): void {
+  localStorage.setItem('test-agent-environments', JSON.stringify(environments.value))
+}
+
+function captureEnvironment(): EnvironmentProfile {
+  return {
+    id: `env-${Date.now()}`,
+    name: `环境 ${environments.value.length + 1}`,
+    apiBaseUrl: form.apiBaseUrl ?? '',
+    openApiUrl: form.openApiUrl ?? '',
+    uiEntryUrl: form.uiEntryUrl ?? '',
+    apiHeaders: [...apiHeaderEntries.value],
+    env: [...envEntries.value]
+  }
+}
+
+function saveCurrentEnvironment(): void {
+  const profile = captureEnvironment()
+  environments.value.push(profile)
+  activeEnvironmentId.value = profile.id
+  persistEnvironments()
+}
+
+function applyEnvironment(id: string): void {
+  const profile = environments.value.find((item) => item.id === id)
+  if (!profile) return
+  form.apiBaseUrl = profile.apiBaseUrl
+  form.openApiUrl = profile.openApiUrl
+  form.uiEntryUrl = profile.uiEntryUrl
+  apiHeaderEntries.value = profile.apiHeaders.map((entry) => ({ ...entry }))
+  envEntries.value = profile.env.map((entry) => ({ ...entry }))
+  activeEnvironmentId.value = id
+}
+
+function deleteEnvironment(id: string): void {
+  environments.value = environments.value.filter((item) => item.id !== id)
+  if (activeEnvironmentId.value === id) activeEnvironmentId.value = ''
+  persistEnvironments()
 }
 
 async function persistCurrentRun(): Promise<void> {
@@ -360,10 +490,26 @@ onMounted(() => {
       case 'selectKnowledgeRoots':
         void selectKnowledgeRoots()
         break
+      case 'settingsEnvironment':
+        openSettingsSection('environment')
+        break
+      case 'settingsApi':
+        openSettingsSection('api')
+        break
+      case 'settingsUi':
+        openSettingsSection('ui')
+        break
+      case 'settingsCoverage':
+        openSettingsSection('coverage')
+        break
+      case 'settingsKnowledge':
+        openSettingsSection('knowledge')
+        break
     }
   })
   void refreshRuntime()
   void loadHistory()
+  loadEnvironments()
 })
 onBeforeUnmount(() => {
   unsubscribeRoots?.()
@@ -380,7 +526,7 @@ onBeforeUnmount(() => {
         <div class="hero-head">
           <div>
             <h1>测试工作台</h1>
-            <p>选择本地项目，Agent 自动读码、生成单元测试、真实执行，并给出覆盖率、风险点与质量结论。</p>
+            <p>1. 选择本地项目　2. 选择测试类型　3. 点击发起真实测试，完成后会自动打开测试报告。</p>
           </div>
           <div class="hero-actions">
             <button v-if="taskActive" class="btn btn-dark" @click="cancelTask">取消任务</button>
@@ -405,7 +551,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="setup-meta">
-          <span v-for="type in (['unit','regression','ui'] as TestType[])" :key="type" class="tag selected">{{ laneLabels[type] }}</span>
+          <span v-for="type in (['unit','regression','ui','api'] as TestType[])" :key="type" class="tag" :class="{ selected: form.testTypes.includes(type) }" @click="toggleTestType(type)">{{ laneLabels[type] }}</span>
           <span class="hint">知识库：{{ knowledgeRoots.length ? knowledgeRoots.join('; ') : '未配置' }}</span>
           <span v-if="error" class="error">{{ error }}</span>
         </div>
@@ -421,10 +567,16 @@ onBeforeUnmount(() => {
         <div class="card stat"><div class="num">{{ history.length }}</div><div class="lbl">运行次数</div></div>
       </div>
 
-      <template v-if="report">
-        <div class="section-head"><h2>PR 评论</h2><button class="btn btn-soft" @click="copyPrComment">复制评论</button></div>
-        <pre class="pr-comment">{{ prComment }}</pre>
-      </template>
+      <section v-if="coverageTrend.length" class="card panel trend-card">
+        <div class="section-head" style="margin-top:0"><h2>覆盖率趋势</h2><span class="hint">最近 {{ coverageTrend.length }} 次</span></div>
+        <div class="trend-chart">
+          <div v-for="(point, index) in coverageTrend" :key="index" class="trend-bar-wrap">
+            <div class="trend-bar" :style="{ height: `${point.coverage}%` }"></div>
+            <span class="trend-value">{{ point.coverage }}%</span>
+            <span class="trend-label">{{ point.label }}</span>
+          </div>
+        </div>
+      </section>
 
       <div class="section-head"><h2>测试流程</h2><span class="hint">{{ progress }}%</span></div>
       <div class="flow3">
@@ -436,10 +588,15 @@ onBeforeUnmount(() => {
       <div class="section-head"><h2>测试泳道</h2></div>
       <div class="lane-row">
         <article v-for="lane in lanes" :key="lane.type" class="card lane-card">
-          <div class="lane-heading"><span class="lane-icon">{{ lane.type === 'unit' ? 'U' : lane.type === 'regression' ? 'R' : 'UI' }}</span><h3>{{ laneLabels[lane.type] }}</h3><span class="chip" :class="lane.status">{{ lane.status }}</span></div>
+          <div class="lane-heading"><span class="lane-icon">{{ lane.type === 'unit' ? 'U' : lane.type === 'regression' ? 'R' : lane.type === 'ui' ? 'UI' : 'A' }}</span><h3>{{ laneLabels[lane.type] }}</h3><span class="chip" :class="lane.status">{{ lane.status }}</span></div>
           <p>{{ lane.summary }}</p>
         </article>
       </div>
+
+      <template v-if="report">
+        <div class="section-head"><h2>PR 评论</h2><button class="btn btn-soft" @click="copyPrComment">复制评论</button></div>
+        <pre class="pr-comment">{{ prComment }}</pre>
+      </template>
 
       <footer class="footer">{{ runtime.message }}</footer>
     </template>
@@ -488,6 +645,28 @@ onBeforeUnmount(() => {
 
       <div v-if="report?.summary" class="card panel summary-card">{{ report.summary }}</div>
 
+      <section v-if="report?.uiSteps?.length || report?.timeline?.length" class="report-section">
+        <h2>执行时间线</h2>
+        <div v-if="report?.uiSteps?.length" class="exec-timeline">
+          <div v-for="(step, index) in report.uiSteps" :key="index" class="card exec-step" :class="step.status">
+            <img v-if="step.screenshot" :src="shotUrl(step.screenshot)" class="exec-thumb" :alt="step.name" />
+            <div class="exec-step-body">
+              <div class="exec-step-head"><b>{{ step.name }}</b><span class="chip" :class="step.status">{{ step.status }}</span><span class="muted">{{ step.durationMs !== undefined ? `${Math.round(step.durationMs / 1000)}s` : '' }}</span></div>
+              <div v-if="step.error" class="exec-step-error">{{ step.error }}</div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="timeline">
+          <div v-for="item in report.timeline" :key="item.stage" class="timeline-item" :class="item.status">
+            <span class="timeline-dot"></span>
+            <div class="timeline-body">
+              <div class="timeline-head"><b>{{ item.stage }}</b><span class="chip" :class="item.status">{{ item.status === 'passed' ? '已完成' : item.status === 'running' ? '进行中' : item.status }}</span><span class="muted">{{ item.durationMs !== undefined ? `${Math.round(item.durationMs / 1000)}s` : '' }}</span></div>
+              <div class="muted">{{ item.message }}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="report-section">
         <h2>覆盖率</h2>
         <div class="card panel">
@@ -508,14 +687,48 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <section v-if="report?.fixes?.length" class="report-section">
+        <h2>建议修复</h2>
+        <div v-for="(fix, index) in report.fixes" :key="index" class="card fix-card">
+          <div class="fix-head">
+            <span class="severity" :class="fix.severity">{{ fix.severity === 'high' ? '高' : fix.severity === 'medium' ? '中' : '低' }}</span>
+            <b>{{ fix.title }}</b>
+            <span class="muted">{{ fix.file }}</span>
+          </div>
+          <div class="muted fix-summary">{{ fix.summary }}</div>
+          <div class="fix-diff">
+            <div><div class="muted">修复前</div><pre class="code-block">{{ fix.beforeCode || '-' }}</pre></div>
+            <div><div class="muted">修复后</div><pre class="code-block">{{ fix.afterCode || '-' }}</pre></div>
+          </div>
+        </div>
+      </section>
+
       <section class="report-section">
         <h2>测试泳道</h2>
         <div class="lane-row">
           <article v-for="lane in lanes" :key="lane.type" class="card lane-card">
-            <div class="lane-heading"><span class="lane-icon">{{ lane.type === 'unit' ? 'U' : lane.type === 'regression' ? 'R' : 'UI' }}</span><h3>{{ laneLabels[lane.type] }}</h3><span class="chip" :class="lane.status">{{ lane.status }}</span></div>
+            <div class="lane-heading"><span class="lane-icon">{{ lane.type === 'unit' ? 'U' : lane.type === 'regression' ? 'R' : lane.type === 'ui' ? 'UI' : 'A' }}</span><h3>{{ laneLabels[lane.type] }}</h3><span class="chip" :class="lane.status">{{ lane.status }}</span></div>
             <p>{{ lane.summary }}</p>
           </article>
         </div>
+      </section>
+
+      <section v-if="report?.api" class="report-section">
+        <h2>接口测试</h2>
+        <table class="data-table">
+          <thead><tr><th>方法</th><th>路径</th><th>状态</th><th>实际状态码</th><th>耗时</th><th>原因</th></tr></thead>
+          <tbody>
+            <tr v-if="!report.api.details?.length"><td colspan="6" class="muted">暂无接口执行记录。</td></tr>
+            <tr v-for="item in report.api.details" :key="item.caseId">
+              <td><span class="chip">{{ item.method }}</span></td>
+              <td>{{ item.path }}</td>
+              <td><span class="chip" :class="item.status">{{ item.status }}</span></td>
+              <td>{{ item.statusCode ?? '-' }}</td>
+              <td>{{ item.durationMs !== undefined ? `${item.durationMs}ms` : '-' }}</td>
+              <td>{{ item.reason ?? '-' }}</td>
+            </tr>
+          </tbody>
+        </table>
       </section>
 
       <section class="report-section">
@@ -535,7 +748,7 @@ onBeforeUnmount(() => {
           <thead><tr><th>用例</th><th>层级</th><th>错误摘要</th><th>根因建议</th><th>截图</th></tr></thead>
           <tbody>
             <tr v-if="!report?.failedCases?.length"><td colspan="5" class="muted">本次运行没有失败用例。</td></tr>
-            <tr v-for="item in report?.failedCases" :key="item.name"><td>{{ item.name }}</td><td>{{ item.layer }}</td><td>{{ item.error }}</td><td>{{ item.suggestion ?? '-' }}</td><td>{{ item.screenshot ?? '-' }}</td></tr>
+            <tr v-for="item in report?.failedCases" :key="item.name"><td>{{ item.name }}</td><td>{{ item.layer }}</td><td>{{ item.error }}</td><td>{{ item.suggestion ?? '-' }}</td><td><img v-if="item.screenshot" :src="shotUrl(item.screenshot)" class="step-shot" :alt="item.screenshot" /><span v-else>-</span></td></tr>
           </tbody>
         </table>
       </section>
@@ -544,6 +757,21 @@ onBeforeUnmount(() => {
         <h2>UI 截图</h2>
         <div class="shot-grid">
           <figure v-for="shot in report.screenshots" :key="shot" class="shot-item"><img :src="shotUrl(shot)" :alt="shot" /><figcaption>{{ shot }}</figcaption></figure>
+        </div>
+      </section>
+
+      <section v-if="report?.recording?.video || report?.recording?.trace" class="report-section">
+        <h2>执行录像 / Trace</h2>
+        <div class="recording-row">
+          <div v-if="report.recording.video" class="card panel">
+            <div class="muted" style="margin-bottom:8px">执行录像</div>
+            <video :src="shotUrl(report.recording.video)" controls style="width:100%;border-radius:10px;background:#000"></video>
+          </div>
+          <div v-if="report.recording.trace" class="card panel">
+            <div class="muted" style="margin-bottom:8px">Playwright Trace</div>
+            <a class="btn btn-soft" :href="shotUrl(report.recording.trace)" target="_blank" rel="noreferrer">打开 Trace 文件</a>
+            <div class="path muted" style="margin-top:8px">{{ report.recording.trace }}</div>
+          </div>
         </div>
       </section>
 
@@ -566,6 +794,7 @@ onBeforeUnmount(() => {
       <div class="export-bar">
         <button class="btn btn-primary" :disabled="!report" @click="exportReport('markdown')">导出 Markdown</button>
         <button class="btn btn-dark" :disabled="!report" @click="exportReport('html')">导出 HTML</button>
+        <button class="btn btn-dark" :disabled="!report" @click="exportReport('pdf')">导出 PDF</button>
         <button class="btn btn-soft" :disabled="!report" @click="copySummary">复制摘要</button>
       </div>
     </div>
@@ -599,8 +828,32 @@ onBeforeUnmount(() => {
     <div v-else-if="view === 'settings'" class="detail-view">
       <button class="back" @click="go('home')">← 返回首页</button>
       <h1 class="detail-title">配置</h1>
-      <p class="detail-sub">本机执行与知识库配置</p>
-      <section class="report-section">
+      <p class="detail-sub">测试环境、接口、UI、覆盖率与知识库配置</p>
+      <div class="settings-tabs">
+        <button :class="{ active: settingsSection === 'environment' }" @click="settingsSection = 'environment'">环境配置</button>
+        <button :class="{ active: settingsSection === 'api' }" @click="settingsSection = 'api'">接口测试</button>
+        <button :class="{ active: settingsSection === 'ui' }" @click="settingsSection = 'ui'">UI/E2E</button>
+        <button :class="{ active: settingsSection === 'coverage' }" @click="settingsSection = 'coverage'">覆盖率</button>
+        <button :class="{ active: settingsSection === 'knowledge' }" @click="settingsSection = 'knowledge'">知识库</button>
+      </div>
+      <section v-show="settingsSection === 'environment'" class="report-section">
+        <h2>环境配置</h2>
+        <div class="card panel">
+          <div class="section-head" style="margin-top:0">
+            <span class="muted">保存多套环境，切换后自动带入接口/UI 地址、Header 和环境变量</span>
+            <button class="btn btn-primary" @click="saveCurrentEnvironment">保存当前配置</button>
+          </div>
+          <div v-if="!environments.length" class="muted">暂无环境，先填好下面配置再保存。</div>
+          <div v-else class="env-profile-list">
+            <button v-for="profile in environments" :key="profile.id" class="env-profile-item" :class="{ active: activeEnvironmentId === profile.id }" @click="applyEnvironment(profile.id)">
+              <span>{{ profile.name }}</span>
+              <span class="muted">{{ profile.apiBaseUrl || '未配置 API 地址' }}</span>
+              <button class="btn btn-soft" @click.stop="deleteEnvironment(profile.id)">删除</button>
+            </button>
+          </div>
+        </div>
+      </section>
+      <section v-show="settingsSection === 'coverage'" class="report-section">
         <h2>覆盖率目标</h2>
         <div class="card panel settings-row">
           <div>
@@ -610,7 +863,7 @@ onBeforeUnmount(() => {
           <span class="hint">低于该值时，质量门禁会标记为需人工关注</span>
         </div>
       </section>
-      <section class="report-section">
+      <section v-show="settingsSection === 'knowledge'" class="report-section">
         <h2>知识库目录</h2>
         <div class="card panel settings-row">
           <div>
@@ -618,6 +871,56 @@ onBeforeUnmount(() => {
             <div class="root-list">{{ knowledgeRoots.length ? knowledgeRoots.join('; ') : '未配置' }}</div>
           </div>
           <button class="btn btn-primary" @click="selectKnowledgeRoots">选择目录</button>
+        </div>
+      </section>
+      <section v-show="settingsSection === 'api'" class="report-section">
+        <h2>接口测试入口</h2>
+        <div class="card panel settings-row">
+          <div>
+            <div class="muted">API 基础地址（选择接口测试时使用）</div>
+            <input v-model="form.apiBaseUrl" class="settings-input" style="width:420px" placeholder="http://127.0.0.1:8080" />
+            <div class="muted" style="margin-top:12px">OpenAPI / Swagger 文档地址或本地文件路径</div>
+            <input v-model="form.openApiUrl" class="settings-input" style="width:420px" placeholder="http://127.0.0.1:8080/v3/api-docs 或 C:\path\openapi.json" />
+          </div>
+          <span class="hint">Agent 会从测试计划中提取接口路径，并基于该地址执行 HTTP 断言</span>
+        </div>
+      </section>
+      <section v-show="settingsSection === 'api'" class="report-section">
+        <h2>接口认证 / Header</h2>
+        <div class="card panel">
+          <div class="section-head" style="margin-top:0"><span class="muted">例如 Authorization: Bearer xxx，或 X-API-Key: xxx</span><button class="btn btn-soft" @click="addApiHeaderEntry">添加 Header</button></div>
+          <div v-if="!apiHeaderEntries.length" class="muted">暂无自定义 Header</div>
+          <div v-else class="env-list">
+            <div v-for="(entry, index) in apiHeaderEntries" :key="index" class="env-row">
+              <input v-model="entry.key" class="settings-input env-key" placeholder="Header 名，如 Authorization" />
+              <input v-model="entry.value" type="password" class="settings-input env-value" placeholder="Header 值" />
+              <button class="btn btn-soft" @click="removeApiHeaderEntry(index)">删除</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section v-show="settingsSection === 'ui'" class="report-section">
+        <h2>UI/E2E 测试入口</h2>
+        <div class="card panel settings-row">
+          <div>
+            <div class="muted">测试入口 URL（留空则自动启动本地 Vite）</div>
+            <input v-model="form.uiEntryUrl" class="settings-input" style="width:420px" placeholder="https://app.example.com/login" />
+          </div>
+          <span class="hint">通用 UI 冒烟会打开这个地址，并透传给 Playwright 测试环境</span>
+        </div>
+      </section>
+      <section v-show="settingsSection === 'ui'" class="report-section">
+        <h2>UI/E2E 环境变量</h2>
+        <div class="card panel">
+          <div class="section-head" style="margin-top:0"><span class="muted">凭据建议只放本地，不会写入报告或历史</span><button class="btn btn-soft" @click="addEnvEntry">添加变量</button></div>
+          <div v-if="!envEntries.length" class="muted">暂无环境变量</div>
+          <div v-else class="env-list">
+            <div v-for="(entry, index) in envEntries" :key="index" class="env-row">
+              <input v-model="entry.key" class="settings-input env-key" placeholder="变量名，如 TEST_ACCOUNT" />
+              <input v-model="entry.value" type="password" class="settings-input env-value" placeholder="变量值" />
+              <button class="btn btn-soft" @click="removeEnvEntry(index)">删除</button>
+            </div>
+          </div>
         </div>
       </section>
     </div>

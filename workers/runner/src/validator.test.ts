@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
 import { afterAll, describe, expect, it } from 'vitest'
-import { computeMetrics, countAssertionFiles, mavenCommandSpec, parseSurefireSummary, runApiCases, runMavenCommand, runNodeUnitTests, scrubExecutionEnvironment } from './validator.js'
+import { computeMetrics, countAssertionFiles, mavenCommandSpec, parsePlaywrightReport, parseSurefireSummary, runApiCases, runMavenCommand, runNodeUnitTests, scrubExecutionEnvironment } from './validator.js'
 
 const projects: string[] = []
 
@@ -14,6 +14,40 @@ it('uses the Windows Maven launcher instead of the extensionless Unix script', (
     args: ['/d', '/s', '/c', 'mvn.cmd test'],
     cwd: 'C:\\project'
   })
+})
+
+it('parses Playwright JSON reporter into UI steps and recording artifacts', () => {
+  const report = JSON.stringify({
+    stats: { expected: 1, unexpected: 1, flaky: 0, skipped: 0 },
+    suites: [{
+      specs: [{
+        title: 'login flow',
+        tests: [{
+          results: [{
+            status: 'failed',
+            duration: 1200,
+            error: { message: 'login button not found' },
+            steps: [
+              { title: '打开登录页', duration: 200 },
+              { title: '点击登录按钮', duration: 300, status: 'failed', error: { message: 'login button not found' } }
+            ],
+            attachments: [
+              { name: 'screenshot', contentType: 'image/png', path: 'C:\\works\\app\\failure.png' },
+              { name: 'video', contentType: 'video/webm', path: 'C:\\works\\app\\video.webm' },
+              { name: 'trace', contentType: 'application/zip', path: 'C:\\works\\app\\trace.zip' }
+            ]
+          }]
+        }]
+      }]
+    }]
+  })
+  const parsed = parsePlaywrightReport(report)
+  expect(parsed.stats).toMatchObject({ tests: 2, pass: 1, fail: 1 })
+  expect(parsed.tests[0]).toMatchObject({ title: 'login flow', status: 'failed', video: 'C:\\works\\app\\video.webm', trace: 'C:\\works\\app\\trace.zip' })
+  expect(parsed.tests[0].steps).toEqual([
+    expect.objectContaining({ name: '打开登录页', status: 'passed', durationMs: 200 }),
+    expect.objectContaining({ name: '点击登录按钮', status: 'failed', error: 'login button not found', screenshot: 'C:\\works\\app\\failure.png' })
+  ])
 })
 
 function makeProject(files: Record<string, string>): string {
