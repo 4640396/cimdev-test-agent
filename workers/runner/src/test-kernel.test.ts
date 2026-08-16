@@ -63,6 +63,11 @@ describe('runTestKernel', () => {
     expect(emitted.some((event) => event.stage === 'GENERATING')).toBe(true)
     expect(emitted.some((event) => event.stage === 'VALIDATING')).toBe(true)
     expect(emitted.some((event) => event.stage === 'ANALYZING')).toBe(true)
+    expect(outcome.report.timeline?.map((item) => `${item.stage}:${item.status}`)).toEqual([
+      '生成测试:passed',
+      '独立验证:passed',
+      '质量门禁与分析:passed'
+    ])
 
     const types = runEvents.replay().map((event) => event.type)
     expect(types).toContain('agent/started')

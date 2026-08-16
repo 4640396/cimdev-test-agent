@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { createTestWorkflowStages } from './test-workflow-stages.js'
+import { runAnalyzingStage, runGeneratingStage, runValidatingStage } from './test-workflow-stages.js'
 
 describe('test workflow stages', () => {
-  it('exposes the three expected stages', () => {
-    expect(createTestWorkflowStages().map((stage) => stage.name)).toEqual(['generating', 'validating', 'analyzing'])
+  it('exposes the three real stage functions', () => {
+    expect(typeof runGeneratingStage).toBe('function')
+    expect(typeof runValidatingStage).toBe('function')
+    expect(typeof runAnalyzingStage).toBe('function')
   })
 })
