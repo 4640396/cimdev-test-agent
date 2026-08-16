@@ -226,7 +226,7 @@ export async function runValidatingStage(
     },
     {
       name: 'api_test',
-      required: plan.routing.some((item) => item.layer === 'api'),
+      required: input.testTypes.includes('api') || plan.routing.some((item) => item.layer === 'api'),
       executed: apiResult !== null,
       ok: apiResult?.ok ?? true,
       tests: (apiResult?.pass ?? 0) + (apiResult?.fail ?? 0),
