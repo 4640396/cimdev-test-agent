@@ -2,7 +2,7 @@ import type { AgentAdapter, AgentEvent, AgentRunResult } from './agent/types.js'
 import { buildKnowledgeContext, collectKnowledgeRefs, resolveKnowledgeRoots } from './knowledge.js'
 import type { TestExecutorRegistry } from './executors/runtime.js'
 import type { VerificationCheck } from './plugins/index.js'
-import type { WorkerPluginRuntime } from './plugins/runtime.js'
+import type { WorkerPluginContext, WorkerPluginRuntime } from './plugins/runtime.js'
 import type { MavenTestInput, MavenTestOutput } from './plugins/maven-test.js'
 import type { QualityGateInput, QualityGateOutput } from './plugins/quality-gate.js'
 import type { TestPlanInput, TestPlanOutput } from './plugins/test-plan.js'
@@ -69,38 +69,17 @@ export interface TestKernelSessionContext {
 
 type Outcome = MavenTestOutput | NodeTestOutcome
 
-/** Transport-agnostic execution kernel shared by Endpoint Host and Shared Worker. */
-export async function runTestKernel(context: TestKernelSessionContext): Promise<TestKernelOutcome> {
-  const { executionId, projectPath, input, capabilities, provider, pluginRuntime, executors, runEvents, signal, emit } = context
-  const startedAt = Date.now()
+interface GeneratingStageResult {
+  adapterResult: AgentRunResult
+  plan: TestPlanOutput
+  knowledge: ReturnType<typeof collectKnowledgeRefs>
+  knowledgeMeta: TestKernelKnowledgeMeta
+  executionCapabilities: readonly string[]
+  pluginContext: WorkerPluginContext
+}
 
-  const timeline: TimelineRecord[] = []
-  const startTimelineStage = (stage: string, message: string): void => {
-    timeline.push({ stage, status: 'running', startedAt: new Date().toISOString(), message })
-  }
-  const finishTimelineStage = (stage: string, status: 'passed' | 'failed' = 'passed', message?: string): void => {
-    for (let index = timeline.length - 1; index >= 0; index -= 1) {
-      const item = timeline[index]
-      if (item.stage === stage && item.status === 'running') {
-        item.status = status
-        item.durationMs = Date.now() - new Date(item.startedAt).getTime()
-        if (message !== undefined) item.message = message
-        return
-      }
-    }
-  }
-
-  const stageLabels: Record<string, string> = {
-    GENERATING: '生成测试',
-    VALIDATING: '独立验证',
-    ANALYZING: '质量门禁与分析'
-  }
-  const emitStage = async (stage: string): Promise<void> => {
-    const label = stageLabels[stage] ?? stage
-    startTimelineStage(label, `进入阶段：${stage}`)
-    await emit({ level: 'info', message: `进入阶段：${stage}`, stage })
-  }
-
+async function runGeneratingStage(context: TestKernelSessionContext, emit: (event: AgentEvent) => void | Promise<void>): Promise<GeneratingStageResult> {
+  const { input, projectPath, capabilities, provider, pluginRuntime, executors, runEvents, signal } = context
   const knowledge = collectKnowledgeRefs(resolveKnowledgeRoots(input, projectPath), input.systemName)
   const knowledgeMeta: TestKernelKnowledgeMeta = {
     refs: knowledge.refs.map((ref) => ({ source: ref.source, version: ref.version, type: ref.type })),
@@ -113,9 +92,7 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
       ? `知识库降级：${knowledge.reason}`
       : `知识库命中 ${knowledge.refs.length} 条：${knowledge.refs.map((ref) => ref.source).join(', ')}`
   })
-
   await emit({ level: 'info', message: `Worker使用 ${provider.name} 执行真实测试` })
-  await emitStage('GENERATING')
   runEvents.append('agent/started', { provider: provider.name })
   const adapterResult = await provider.run(
     input,
@@ -124,13 +101,12 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     { knowledge: buildKnowledgeContext(knowledge) }
   )
   runEvents.append('agent/completed', { provider: provider.name, lanes: adapterResult.lanes.length, artifacts: adapterResult.artifacts.length })
-
   const executionCapabilities = input.requiredCapabilities && input.requiredCapabilities.length > 0
     ? input.requiredCapabilities
     : capabilities
-  const pluginContext = {
+  const pluginContext: WorkerPluginContext = {
     projectPath,
-    executionId,
+    executionId: context.executionId,
     capabilities: executionCapabilities,
     executors,
     events: runEvents,
@@ -152,7 +128,33 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
       ? `测试计划降级：${plan.issues.join('；')}`
       : `测试计划 ${plan.meta.count} 条（按层 ${JSON.stringify(plan.meta.byLayer)}，按价值 ${JSON.stringify(plan.meta.byPriority)}）`
   })
+  return { adapterResult, plan, knowledge, knowledgeMeta, executionCapabilities, pluginContext }
+}
 
+interface ValidatingStageResult {
+  apiResult: ApiCaseOutcome | null
+  mavenOutcome: MavenTestOutput
+  unitOutcome: Outcome | null
+  uiOutcome: NodeTestOutcome | null
+  regressionOutcome: Outcome | null
+  uniqueOutcomes: Outcome[]
+  baseOutcome: Outcome
+  assertions: ReturnType<typeof countAssertionFiles>
+  metrics: ReturnType<typeof computeMetrics>
+  knowledgeRate: number
+  totalPass: number
+  totalFail: number
+  lanes: AgentRunResult['lanes']
+  checks: VerificationCheck[]
+}
+
+async function runValidatingStage(
+  context: TestKernelSessionContext,
+  generated: GeneratingStageResult,
+  emit: (event: AgentEvent) => void | Promise<void>
+): Promise<ValidatingStageResult> {
+  const { input, projectPath } = context
+  const { adapterResult, plan, knowledge, executionCapabilities, pluginContext } = generated
   let apiResult: ApiCaseOutcome | null = null
   {
     let apiCases = plan.routing
@@ -181,7 +183,7 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
   }
 
   const mavenRequired = executionCapabilities.includes('java') && (input.testTypes.includes('unit') || input.testTypes.includes('regression'))
-  const mavenOutcome = await pluginRuntime.execute<'maven_test', MavenTestInput, MavenTestOutput>(
+  const mavenOutcome = await context.pluginRuntime.execute<'maven_test', MavenTestInput, MavenTestOutput>(
     'maven_test',
     pluginContext,
     { required: mavenRequired }
@@ -202,8 +204,6 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     ? (regressionTool === 'java' ? mavenOutcome : (unitOutcome ?? runNodeUnitTests(projectPath, context.sandbox)))
     : null
 
-  finishTimelineStage('生成测试', 'passed', `测试计划 ${plan.meta.count} 条`)
-  await emitStage('VALIDATING')
   const uniqueOutcomes = [...new Set([unitOutcome, uiOutcome, regressionOutcome].filter((outcome): outcome is Outcome => outcome !== null))]
   const baseOutcome = uniqueOutcomes[0] ?? {
     ok: apiResult?.ok ?? true,
@@ -286,13 +286,41 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
       compileError: false
     }
   ]
+  return {
+    apiResult,
+    mavenOutcome,
+    unitOutcome,
+    uiOutcome,
+    regressionOutcome,
+    uniqueOutcomes,
+    baseOutcome,
+    assertions,
+    metrics,
+    knowledgeRate,
+    totalPass,
+    totalFail,
+    lanes,
+    checks
+  }
+}
+
+async function runAnalyzingStage(
+  context: TestKernelSessionContext,
+  generated: GeneratingStageResult,
+  validated: ValidatingStageResult,
+  startedAt: number,
+  timeline: TimelineRecord[]
+): Promise<{ report: TestKernelReport; gate: QualityGateOutput; lanes: AgentRunResult['lanes'] }> {
+  const { input } = context
+  const { adapterResult, plan, knowledgeMeta, pluginContext } = generated
+  const { unitOutcome, uiOutcome, totalPass, totalFail, metrics, knowledgeRate, lanes, checks, apiResult } = validated
   const coverage = unitOutcome?.coverage ?? null
-  const gate = await pluginRuntime.execute<'quality_gate', QualityGateInput, QualityGateOutput>(
+  const gate = await context.pluginRuntime.execute<'quality_gate', QualityGateInput, QualityGateOutput>(
     'quality_gate',
     pluginContext,
     { plan, checks, coverageTarget: input.coverageTarget ?? 60, coverage, metrics }
   )
-  runEvents.append('quality-gate/decided', { passed: gate.passed, reasons: gate.reasons, checks: gate.checks })
+  context.runEvents.append('quality-gate/decided', { passed: gate.passed, reasons: gate.reasons, checks: gate.checks })
   const aiRiskPoints = Array.isArray(adapterResult.riskPoints)
     ? adapterResult.riskPoints
         .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
@@ -352,7 +380,55 @@ export async function runTestKernel(context: TestKernelSessionContext): Promise<
     routing: plan.routing,
     api: apiResult
   }
+  return { report, gate, lanes }
+}
+
+/** Transport-agnostic execution kernel shared by Endpoint Host and Shared Worker. */
+export async function runTestKernel(context: TestKernelSessionContext): Promise<TestKernelOutcome> {
+  const { executionId, projectPath, input, capabilities, provider, pluginRuntime, executors, runEvents, signal, emit } = context
+  const startedAt = Date.now()
+
+  const timeline: TimelineRecord[] = []
+  const startTimelineStage = (stage: string, message: string): void => {
+    timeline.push({ stage, status: 'running', startedAt: new Date().toISOString(), message })
+  }
+  const finishTimelineStage = (stage: string, status: 'passed' | 'failed' = 'passed', message?: string): void => {
+    for (let index = timeline.length - 1; index >= 0; index -= 1) {
+      const item = timeline[index]
+      if (item.stage === stage && item.status === 'running') {
+        item.status = status
+        item.durationMs = Date.now() - new Date(item.startedAt).getTime()
+        if (message !== undefined) item.message = message
+        return
+      }
+    }
+  }
+
+  const stageLabels: Record<string, string> = {
+    GENERATING: '生成测试',
+    VALIDATING: '独立验证',
+    ANALYZING: '质量门禁与分析'
+  }
+  const emitStage = async (stage: string): Promise<void> => {
+    const label = stageLabels[stage] ?? stage
+    startTimelineStage(label, `进入阶段：${stage}`)
+    await emit({ level: 'info', message: `进入阶段：${stage}`, stage })
+  }
+
+  await emitStage('GENERATING')
+  const generated = await runGeneratingStage(context, emit)
+  const { adapterResult, plan, knowledge, knowledgeMeta, executionCapabilities, pluginContext } = generated
+  finishTimelineStage('生成测试', 'passed', `测试计划 ${plan.meta.count} 条`)
+
+    await emitStage('VALIDATING')
+  const validated = await runValidatingStage(context, generated, emit)
+  const { apiResult, unitOutcome, uiOutcome, regressionOutcome, uniqueOutcomes, baseOutcome, assertions, metrics, knowledgeRate, totalPass, totalFail, lanes, checks } = validated
   finishTimelineStage('独立验证', 'passed', `通过 ${totalPass} / 失败 ${totalFail}`)
+
+  const analyzed = await runAnalyzingStage(context, generated, validated, startedAt, timeline)
+  const { report, gate, lanes: analyzedLanes } = analyzed
+
+finishTimelineStage('独立验证', 'passed', `通过 ${totalPass} / 失败 ${totalFail}`)
   await emitStage('ANALYZING')
   await emit({
     level: gate.passed ? 'success' : 'warning',
